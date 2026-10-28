@@ -1,0 +1,94 @@
+# CI gates for eshu-extension-host. Lane contract (see CONTRIBUTING.md):
+# frozen job names lint, test, race, shell, image, govulncheck, gosec, with
+# ci-complete as the only required context. The tree holds no Go sources,
+# shell scripts, Dockerfile, or go.mod yet, so only the workflow-validation
+# part of lint runs; each lane lands with its first real input (see #1).
+# A PR pays only for lanes its paths can affect; docs-only PRs run no lane
+# and stay mergeable through ci-complete.
+name: ci
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ACTIONLINT_VERSION: v1.7.12
+
+jobs:
+  changes:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      fixtures: ${{ steps.filter.outputs.fixtures }}
+      shell: ${{ steps.filter.outputs.shell }}
+      deps: ${{ steps.filter.outputs.deps }}
+      image: ${{ steps.filter.outputs.image }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v7 # 3d3c42e5aac5ba805825da76410c181273ba90b1
+      - id: filter
+        uses: dorny/paths-filter@v4 # ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.golangci.yml'
+            fixtures:
+              - 'testdata/**'
+              - '**/*.json'
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '*.example.*'
+            shell:
+              - '**/*.sh'
+            deps:
+              - 'go.mod'
+              - 'go.sum'
+            image:
+              - 'Dockerfile'
+              - '.dockerignore'
+            workflows:
+              - '.github/workflows/**'
+
+  lint:
+    # Until the first Go sources land, lint validates workflow files with
+    # actionlint only. The go vet, golangci-lint, gofumpt format, go mod
+    # tidy, and 500-line cap steps land with those sources (epic #1).
+    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.go == 'true' || needs.changes.outputs.workflows == 'true' || (needs.changes.result != 'success' && github.event_name != 'pull_request'))
+    needs: [changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7 # 3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: |
+          set -euo pipefail
+          v="${ACTIONLINT_VERSION#v}"
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/${ACTIONLINT_VERSION}/actionlint_${v}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint
+
+  ci-complete:
+    if: always()
+    needs: [changes, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: |
+          printf '%s\n' '${{ toJSON(needs) }}' | python3 -c "import json,sys; sys.exit(1 if any(j.get('result') in ('failure', 'cancelled') for j in json.load(sys.stdin).values()) else 0)"
