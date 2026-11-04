@@ -14,11 +14,11 @@
 GOLANGCI_LINT_VERSION ?= v2.12.2
 COVERAGE_FLOOR ?= 90.0
 
-.PHONY: ci lint test race actionlint tools-lint
+.PHONY: ci lint test race actionlint
 
 ci: lint test race
 
-lint: tools-lint
+lint:
 	go vet ./...
 	golangci-lint run ./...
 	golangci-lint fmt --diff ./...

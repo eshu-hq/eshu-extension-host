@@ -74,7 +74,13 @@ func TestParseFlagsRejectsClaimEnablement(t *testing.T) {
 	}
 }
 
-func TestVersionFlagReportsStampedVersion(t *testing.T) {
+// TestVersionFlagReportsBuildVersion covers the --version flag plumbing:
+// the flag prints the compiled-in build version and exits 0. It does NOT
+// prove the release ldflags stamp reaches the binary (in-process `version`
+// is whatever the test binary was built with); that path is exercised by
+// the `image` lane in ci.yml, which builds with a known VERSION and
+// asserts /healthz reports it.
+func TestVersionFlagReportsBuildVersion(t *testing.T) {
 	var stdout strings.Builder
 	if code := run([]string{"--version"}, &stdout, io.Discard); code != 0 {
 		t.Fatalf("run(--version) exit = %d, want 0", code)

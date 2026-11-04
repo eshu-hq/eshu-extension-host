@@ -82,10 +82,66 @@ func TestImportBoundaryRejectsClaimPlaneImports(t *testing.T) {
 	}
 }
 
+// isStdlibImport reports whether p is a standard-library import path.
+// Every stdlib first segment is dotless (fmt, net/http); every module
+// path has a dotted first segment (github.com/..., go.opentelemetry.io).
+func isStdlibImport(p string) bool {
+	first, _, _ := strings.Cut(p, "/")
+	return !strings.Contains(first, ".")
+}
+
 func TestImportBoundaryListIsNonEmpty(t *testing.T) {
 	// A boundary test with an empty ban list passes vacuously. This guard
 	// pins the list shape: the banned set only grows by deliberate edit.
 	if len(bannedImportPrefixes) < 5 {
 		t.Fatalf("banned list has %d entries, want at least 5", len(bannedImportPrefixes))
+	}
+}
+
+func TestIsStdlibImportRejectsClaimPlanePaths(t *testing.T) {
+	// The predicate is the load-bearing half of the stdlib-only guard:
+	// every claim-plane-capable path a later leaf could reach for must
+	// read as non-stdlib, including paths outside the six-prefix ban
+	// list (lib/pq-style drivers, other JWT/Otel/pubsub clients).
+	for _, p := range []string{"fmt", "net/http", "go/parser", "strings"} {
+		if !isStdlibImport(p) {
+			t.Errorf("isStdlibImport(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{
+		"github.com/eshu-hq/eshu/go/internal/ifa",
+		"github.com/jackc/pgx/v5",
+		"github.com/neo4j/neo4j-go-driver/v5/neo4j",
+		"go.opentelemetry.io/otel",
+		"github.com/aws/aws-sdk-go-v2/service/ec2",
+		"github.com/golang-jwt/jwt/v5",
+		"github.com/lib/pq",
+		"go.uber.org/zap",
+	} {
+		if isStdlibImport(p) {
+			t.Errorf("isStdlibImport(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestModuleImportsAreStdlibOnly(t *testing.T) {
+	// Whole-module invariant behind the PROVENANCE.md stdlib-only claim:
+	// the dark module carries zero non-stdlib imports, so no
+	// claim-plane-capable dependency can enter under an unlisted path.
+	// (An unlisted path added to go.mod breaks `go mod tidy -diff` and
+	// the lint-lane `go list -m` check first; this test is the second
+	// lock on the same door.)
+	fset := token.NewFileSet()
+	for _, path := range moduleGoFiles(t) {
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			if !isStdlibImport(p) {
+				t.Errorf("%s imports non-stdlib %q", path, p)
+			}
+		}
 	}
 }

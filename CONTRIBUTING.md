@@ -2,42 +2,49 @@
 
 ## Local gates
 
-`make ci` runs what CI's `lint` lane runs. The tree holds no Go sources
-yet, so that is workflow validation with `actionlint` today; the `go vet`,
-`golangci-lint run`, gofumpt format, `go mod tidy -diff`, 500-line `.go`
-cap, `go build`, test, and race commands land with the first Go sources
-(epic #1). Run `make ci` before every push. It needs `actionlint` on
-`PATH`; CI pins its copy via `ACTIONLINT_VERSION` in `ci.yml`.
+`make ci` runs what CI's `lint`, `test`, and `race` lanes run: `go vet`,
+`golangci-lint run`, gofumpt format check, `go mod tidy -diff`, the 500-line
+`.go` cap, `go build`, the full test suite, and the race suite with the
+coverage floor (90.0, may only rise). `make actionlint` mirrors the workflow
+lint in the `lint` lane. Run `make ci` before every push. It needs
+`golangci-lint` and `actionlint` on `PATH`; CI pins its own copies
+(golangci-lint v2.12.2 via the lint action, actionlint 1.7.12 hardcoded
+with a sha256 pin in `ci.yml`).
 
 ## CI lanes
 
-Job names are frozen because the `main` ruleset requires `ci-complete`:
+Job names are frozen because the `main` ruleset requires `ci-complete`.
+Conditions below are the PR-event path; on `push`, `schedule`, and
+`workflow_dispatch` every lane except the path-filtered skips runs
+(schedule = full lane sweep: govulncheck + gosec file findings issues,
+lint/test/race/image also execute).
 
-| Lane | Runs when |
+| Lane | Runs on a PR when |
 | --- | --- |
-| `lint` | Workflow changes (actionlint today; full Go lint set with the first Go sources) |
-| `test` | Lands with the first Go sources; then Go sources, fixtures, configs tests read, workflow changes |
-| `race` | Lands with the first Go sources; same inputs as `test`, plus a coverage artifact and floor check |
-| `shell` | Lands with the first `*.sh`; shell script changes |
-| `image` | Lands with the first `Dockerfile`; `Dockerfile`, `.dockerignore`, Go sources, module changes (build only, no push) |
-| `govulncheck` | Lands with the first `go.mod`; dependency changes, pushes to `main`, weekly schedule, manual dispatch |
-| `gosec` | Lands with the first `go.mod`; pushes to `main`, weekly schedule, manual dispatch; advisory, SARIF to the Security tab |
+| `changes` | Always (path filter; other lanes consume its outputs) |
+| `lint` | Go sources, `misc` catch-all, workflow changes |
+| `test` | Go sources, fixtures, shell scripts, `misc`, workflow changes |
+| `race` | Go sources, `misc`, workflow changes (plus a coverage artifact and the floor check; excludes the fixtures/shell triggers `test` has) |
+| `image` | `Dockerfile`/`.dockerignore`, Go sources, `misc`, workflow changes (build only, no push; asserts digest pins, dark posture, and the VERSION stamp) |
+| `govulncheck` | Dependency changes (`go.mod`/`go.sum`), workflow changes; files an issue on scheduled failure |
+| `gosec` | Go sources, `misc`, workflow changes; advisory on PRs, SARIF upload on non-PR events only |
 | `ci-complete` | Always; fails on any needed lane failure, passes on legitimate skips |
 
 Docs-only PRs run no lane and stay mergeable through `ci-complete`.
-A manual `workflow_dispatch` run records every active lane.
+There is no `shell` lane: `*.sh` changes select the `test` lane via the
+`shell` filter group.
 
 ## Coverage floor
 
-The `race` job will fail below `COVERAGE_FLOOR` in `ci.yml` once Go code
-lands. The floor starts at the first measured baseline and may only rise
-toward the 90% target as tests land. Never lower it, exclude packages
-silently, or delete assertions to move the number.
+The `race` job fails below `COVERAGE_FLOOR` in `ci.yml` (90.0, the first
+measured baseline for the dark binary). The floor may only rise toward the
+90% target as tests land. Never lower it, exclude packages silently, or
+delete assertions to move the number.
 
 ## No static gates, no hidden debt
 
 No gate compares the tree against a committed count, list, or
-generated-parity file, except the 500-line cap on `.go` files that lands
-with the first Go sources. Lint runs on the whole repo with no
-`--new-from-rev` window. Every exclusion in `.golangci.yml` will cite its
-reason and a linked open issue on the same lines.
+generated-parity file, except the 500-line cap on `.go` files. Lint runs on
+the whole repo with no `--new-from-rev` window. Every exclusion in
+`.golangci.yml` cites its reason and a linked open issue on the same
+lines — currently there are no exclusions, so the rule holds vacuously.

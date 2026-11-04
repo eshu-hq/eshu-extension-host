@@ -36,7 +36,7 @@ on:
     branches:
       - main
   schedule:
-    - cron: "0 3 * * 1" # weekly Monday 03:00 UTC: govulncheck + gosec only
+    - cron: "0 3 * * 1" # weekly Monday 03:00 UTC: full lane sweep (govulncheck + gosec file findings issues; lint/test/race/image also execute)
   workflow_dispatch: # manual runs execute every lane, like a push
 
 permissions:
@@ -103,7 +103,9 @@ jobs:
               # runs the full Go lanes. Docs-only must keep skipping, so the
               # docs skip set stays negated here; every classified pattern is
               # negated too so narrow lanes (fixtures/shell/image) keep their
-              # shape. Proven by the docs-only / fixture-only skip proofs.
+              # shape. No seed script is checked in for this matrix: verify
+              # a change to it with a docs-only PR run (all lanes skip) and
+              # a fixture-only PR run (only the test lane fires).
               - '**'
               - '!**/*.md'
               - '!LICENSE'
@@ -142,6 +144,12 @@ jobs:
         run: |
           go mod tidy -diff
           git diff --exit-code -- go.mod go.sum
+      - name: zero non-stdlib module deps
+        run: |
+          # PROVENANCE.md stakes stdlib-only: this proves no second module
+          # is required at all, so no claim-plane-capable dependency can
+          # enter under a path the import-boundary test does not list.
+          [ "$(go list -m all)" = "github.com/eshu-hq/eshu-extension-host" ]
       - name: 500-line file cap (wc -l, sole static gate)
         run: |
           over=0
@@ -156,7 +164,11 @@ jobs:
         run: |
           set -euo pipefail
           v="1.7.12"
+          # Checksum from actionlint_1.7.12_checksums.txt on the release
+          # page; re-verify there when bumping the version.
+          sha="8aca8db96f1b94770f1b0d72b6ddcb1ebb8123cb3712530b08cc387b349a3d8"
           curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${v}/actionlint_${v}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
+          echo "${sha}  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint
 
@@ -203,13 +215,16 @@ jobs:
 
   image:
     needs: [changes]
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.image == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.workflows == 'true'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.image == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.misc == 'true' || needs.changes.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build the image without pushing it
-        run: docker build -t eshu-extension-host:ci .
+        # VERSION is a fixed stamp, never dev: the probe below asserts the
+        # Dockerfile ldflags wiring carries it to /healthz, which is the
+        # proof the release tag reaches the health payload.
+        run: docker build --build-arg VERSION=ci-stamp-proof -t eshu-extension-host:ci .
       - name: Dockerfile bases stay digest-pinned
         run: |
           set -euo pipefail
@@ -223,7 +238,8 @@ jobs:
           docker run -d --rm --name extension-host-ci -p 18082:8082 eshu-extension-host:ci
           ok=0
           for _ in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:18082/healthz | grep -q '"mode":"dark"'; then ok=1; break; fi
+            body="$(curl -sf http://127.0.0.1:18082/healthz || true)"
+            if printf '%s' "$body" | grep -q '"mode":"dark"' && printf '%s' "$body" | grep -q '"version":"ci-stamp-proof"'; then ok=1; break; fi
             sleep 1
           done
           [ "$ok" -eq 1 ]
@@ -286,8 +302,9 @@ jobs:
         # generics and exits non-zero even with zero findings; the finding
         # count below is the gate. Advisory until the false-positive rate
         # here is measured; triage happens in the open, never
-        # blanket-excluded. This repo: one G107 suppression with reason on
-        # the test-local loopback probes (main_test.go); count must be 0.
+        # blanket-excluded. This repo: two G107 suppressions with reason on
+        # the test-local loopback probes (main_test.go:115,195); the finding
+        # count below must be 0.
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
           "$(go env GOPATH)/bin/gosec" -no-fail -fmt=sarif -out=gosec.sarif ./...
@@ -339,8 +356,9 @@ jobs:
           # NEEDS_JSON is toJSON(needs): {job: {"result": ..., "outputs": ...}}.
           # Compare v["result"]: comparing whole job OBJECTS never matches
           # (false-green), and needs.*.result is a bare ARRAY that kills
-          # green runs. Proven by the seeded red/green lane proofs in the
-          # closing PR; never change this shape without re-seeding.
+          # green runs. No seed script is checked in for this shape: verify
+          # a change to it with a PR run where one lane skips (ci-complete
+          # stays green) and one where a lane fails (ci-complete goes red).
           needs = json.loads(os.environ["NEEDS_JSON"])
           bad = {k: v.get("result") for k, v in needs.items()
                  if isinstance(v, dict) and v.get("result") in ("failure", "cancelled")}

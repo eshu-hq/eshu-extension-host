@@ -18,10 +18,11 @@ linters:
     - unused
     - errcheck
 
+  # No exclusion presets: the stdlib-only tree reports zero findings
+  # without them (verified by removing them), so there is nothing to
+  # justify with a linked issue. If a preset is ever needed, cite its
+  # reason and linked open issue on the same lines per CONTRIBUTING.md.
   exclusions:
-    presets:
-      - std-error-handling
-      - common-false-positives
     rules: []
 
 formatters:

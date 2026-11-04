@@ -54,10 +54,11 @@ footprint: one static binary, read-only root filesystem compatible.
 ## Provenance, release, rollback
 
 - Source pin and stub-state record: [PROVENANCE.md](PROVENANCE.md).
-- Release: tag `v[0-9]*` runs `.github/workflows/release.yml` — Trivy
-  HIGH/CRITICAL gate, then multi-arch push with SLSA provenance and SPDX
-  SBOM attestations, then a GitHub Release. The overlay pins the published
-  digest, never a floating tag.
+- Release: tag `v[0-9]*` runs `.github/workflows/release.yml` — per-platform
+  Trivy HIGH/CRITICAL gate over every pushed arch, then multi-arch push
+  with SLSA provenance and SPDX SBOM attestations, then a GitHub Release.
+  The deploy overlay (boatsgroup#532, staged) pins the published digest,
+  never a floating tag.
 - Rollback: delete-path-suffices per the #9383 disposition (host owns zero
   durable state); the rehearsal lives in `EXTRACTION_PREP.md` §8 of the
   source pin and runs against the exact deployed digest.

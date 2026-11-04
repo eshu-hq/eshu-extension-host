@@ -3,10 +3,12 @@
 ## What this scaffold is
 
 Dark deploy surface for the extracted extension host: a health-only host
-binary, a digest-pinned Dockerfile, a tag-gated publish pipeline with SLSA
-provenance, and a dark Deployment/Service overlay. Zero claim flow by
-construction — no enablement path exists in the binary. Refs #8877 (no
-closing keyword; the cutover stays staged behind #9376 -> #9381).
+binary, a digest-pinned Dockerfile, and a tag-gated publish pipeline with
+SLSA provenance. Zero claim flow by construction — no enablement path
+exists in the binary. Refs #8877 (no closing keyword; the cutover stays
+staged behind #9376 -> #9381). The dark Deployment/Service overlay is NOT
+in this repo: it lands via the deploy PR (boatsgroup#532), staged behind
+the first tag release, and pins the published digest there.
 
 ## Source pin (in-tree truth this scaffold stages)
 
@@ -48,6 +50,11 @@ automatically if #9381 wiring ever adds a satellite-owned store.
 - `git -C <eshu> show <pin>:go/cmd/collector-component-extension/EXTRACTION_PREP.md`
   reproduces the §1/§5 inventory above.
 - `go test ./... -race` plus `TestImportBoundaryRejectsClaimPlaneImports`
-  proves no in-tree or claim-plane-capable import entered this module.
+  rejects the six listed claim-plane-capable import prefixes, and
+  `TestModuleImportsAreStdlibOnly` asserts the whole-module invariant this
+  sentence stakes: zero non-stdlib imports, so no claim-plane-capable
+  dependency can enter under an unlisted path. The lint lane additionally
+  asserts `go list -m all` reports only this module.
 - Image provenance: first tag release records `subject-digest` plus SLSA
-  and SBOM attestations in GHCR; the overlay pins that digest.
+  and SBOM attestations in GHCR; the deploy overlay (boatsgroup#532)
+  pins that digest.
