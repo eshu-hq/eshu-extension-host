@@ -166,7 +166,7 @@ jobs:
           v="1.7.12"
           # Checksum from actionlint_1.7.12_checksums.txt on the release
           # page; re-verify there when bumping the version.
-          sha="8aca8db96f1b94770f1b0d72b6ddcb1ebb8123cb3712530b08cc387b349a3d8"
+          sha="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
           curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${v}/actionlint_${v}_linux_amd64.tar.gz" -o /tmp/actionlint.tar.gz
           echo "${sha}  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
@@ -229,7 +229,7 @@ jobs:
         run: |
           set -euo pipefail
           from_total=$(grep -Ec '^[[:space:]]*FROM ' Dockerfile)
-          from_pinned=$(grep -Ec '^[[:space:]]*FROM [^[:space:]]+@sha256:[0-9a-f]{64}' Dockerfile)
+          from_pinned=$(grep -Ec '^[[:space:]]*FROM ([^[:space:]]+[[:space:]]+)*[^[:space:]]+@sha256:[0-9a-f]{64}' Dockerfile)
           echo "Dockerfile bases: $from_pinned/$from_total digest-pinned"
           [ "$from_pinned" -eq "$from_total" ]
       - name: Dark posture probe (health only, zero claim flow)
