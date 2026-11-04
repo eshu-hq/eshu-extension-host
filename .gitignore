@@ -1,0 +1,4 @@
+/extension-host
+coverage.out
+dist/
+gosec.sarif
