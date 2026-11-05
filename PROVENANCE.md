@@ -54,6 +54,9 @@ opt-in `v1alpha2`/`v1alpha3`, single MAJOR invariant.
 Expiry triggers (verbatim): box 9 reopens on second host release tag,
 workflow.v2 or payload major 2, host go.mod dependency or claim-flow
 flag, or eshu go.mod pin bump without table update.
+Byte-compared 2026-11-05 against eshu `drive/8877-leaf-6-matrix`
+`3660eb1e` (`EXTRACTION_PREP.md` §5, eshu PR #10202); re-compare on any
+edit to either copy.
 
 ## Destination stub state at scaffold time
 
