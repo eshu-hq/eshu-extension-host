@@ -24,10 +24,36 @@ the first tag release, and pins the published digest there.
   Full inventory lives in `EXTRACTION_PREP.md` §1 of the pinned commit.
 - Contract pins at the source commit: `eshu-sdk/collector v0.2.0-rc.3`,
   `eshu-sdk/factschema v0.1.0-rc.15`, claim plane `workflow.v1` oldest =
-  newest = `v1` (`go.mod:159-161`, `EXTRACTION_PREP.md` §5).
+  newest = `v1` (`go.mod:159-161`, `EXTRACTION_PREP.md` §5). The rc.15
+  factschema pin is historical (eshu has since moved to `v0.1.0-rc.17`
+  per eshu#10043); it is recorded here as scaffold-time truth only. The
+  dark binary couples to no pin: this module's `go.mod` carries only the
+  `go 1.26.10` directive (stdlib-only, asserted by
+  `TestModuleImportsAreStdlibOnly` and the `go list -m all` lint gate).
 - The dark binary vendors none of the above: it is new stdlib-only code,
   so there is no fork to drift. The claim-path wiring (Leaf 6) moves the
   sources; the in-tree removal (Leaf 9) deletes them last.
+
+## Degenerate compatibility matrix (eshu#8877 Leaf 6)
+
+Mirrors `EXTRACTION_PREP.md` §5 of the eshu source pin. Only one host
+release exists (`v0.1.0`, `git tag -l`), so newest-host and oldest-host
+are the same cell; only one claim-plane major (`1`) exists, so
+oldest-core-major and newest-core-major are the same cell:
+
+| Host | Core major | Standing |
+| --- | --- | --- |
+| newest-host `v0.1.0` | oldest-core-major `1` | covered |
+| oldest-host `v0.1.0` | newest-core-major `1` | covered (same cell) |
+
+Re-derivation: `git tag -l` → `v0.1.0` only; eshu `go/go.mod:159-161`
+→ `collector v0.2.0-rc.3`, `factschema v0.1.0-rc.17`,
+`workflow v0.1.0`; `sdk/go/collector/types.go:10` → `v1alpha1` default,
+opt-in `v1alpha2`/`v1alpha3`, single MAJOR invariant.
+
+Expiry triggers (verbatim): box 9 reopens on second host release tag,
+workflow.v2 or payload major 2, host go.mod dependency or claim-flow
+flag, or eshu go.mod pin bump without table update.
 
 ## Destination stub state at scaffold time
 
