@@ -85,9 +85,28 @@ func TestImportBoundaryRejectsClaimPlaneImports(t *testing.T) {
 // isStdlibImport reports whether p is a standard-library import path.
 // Every stdlib first segment is dotless (fmt, net/http); every module
 // path has a dotted first segment (github.com/..., go.opentelemetry.io).
+// This predicate stays pure stdlib: the own-module carve-out lives in
+// isAllowedModuleImport below so this guard keeps its exact meaning.
 func isStdlibImport(p string) bool {
 	first, _, _ := strings.Cut(p, "/")
 	return !strings.Contains(first, ".")
+}
+
+// ownModulePrefix is the one non-stdlib import root the module test
+// allows: this module itself. The worker-loop lane (eshu-hq/eshu#8877
+// Lane C) added it so internal/worker can depend on the
+// cutovercontract seam without tripping the whole-module guard. The
+// trailing slash is load-bearing: it keeps lookalike roots such as
+// github.com/eshu-hq/eshu-extension-hostile/ outside the carve-out.
+const ownModulePrefix = "github.com/eshu-hq/eshu-extension-host/"
+
+// isAllowedModuleImport reports whether p may appear in this module: the
+// standard library, or this module itself. Everything else — the in-tree
+// monorepo, every claim-plane-capable dependency — still reads as
+// disallowed. The banned-prefix test above stays the first lock; this is
+// the second.
+func isAllowedModuleImport(p string) bool {
+	return isStdlibImport(p) || strings.HasPrefix(p, ownModulePrefix)
 }
 
 func TestImportBoundaryListIsNonEmpty(t *testing.T) {
@@ -124,10 +143,46 @@ func TestIsStdlibImportRejectsClaimPlanePaths(t *testing.T) {
 	}
 }
 
+func TestOwnModuleAllowlistIsNarrow(t *testing.T) {
+	// The worker-loop lane (eshu-hq/eshu#8877 Lane C) carves this module
+	// itself out of the stdlib-only module test so internal/worker can
+	// depend on the cutovercontract seam. The carve-out must stay exactly
+	// this module: any other dotted path, including lookalike org paths,
+	// still reads as disallowed.
+	for _, p := range []string{
+		"github.com/eshu-hq/eshu-extension-host/internal/worker",
+		"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract",
+		"github.com/eshu-hq/eshu-extension-host/cmd/extension-host",
+	} {
+		if !isAllowedModuleImport(p) {
+			t.Errorf("isAllowedModuleImport(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"fmt", "net/http"} {
+		if !isAllowedModuleImport(p) {
+			t.Errorf("isAllowedModuleImport(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{
+		"github.com/eshu-hq/eshu/go/internal/ifa",
+		"github.com/eshu-hq/eshu-extension-hostile/internal/worker",
+		"github.com/eshu-hq/eshu-extension-host-evil",
+		"github.com/jackc/pgx/v5",
+		"go.opentelemetry.io/otel",
+	} {
+		if isAllowedModuleImport(p) {
+			t.Errorf("isAllowedModuleImport(%q) = true, want false", p)
+		}
+	}
+}
+
 func TestModuleImportsAreStdlibOnly(t *testing.T) {
 	// Whole-module invariant behind the PROVENANCE.md stdlib-only claim:
-	// the dark module carries zero non-stdlib imports, so no
-	// claim-plane-capable dependency can enter under an unlisted path.
+	// the module carries zero imports outside the standard library and
+	// itself, so no claim-plane-capable dependency can enter under an
+	// unlisted path. The worker-loop lane (eshu-hq/eshu#8877 Lane C)
+	// opened the own-module carve-out (see isAllowedModuleImport and
+	// TestOwnModuleAllowlistIsNarrow); the ban list above is unchanged.
 	// (An unlisted path added to go.mod breaks `go mod tidy -diff` and
 	// the lint-lane `go list -m` check first; this test is the second
 	// lock on the same door.)
@@ -139,8 +194,8 @@ func TestModuleImportsAreStdlibOnly(t *testing.T) {
 		}
 		for _, imp := range f.Imports {
 			p := strings.Trim(imp.Path.Value, `"`)
-			if !isStdlibImport(p) {
-				t.Errorf("%s imports non-stdlib %q", path, p)
+			if !isAllowedModuleImport(p) {
+				t.Errorf("%s imports disallowed %q", path, p)
 			}
 		}
 	}
