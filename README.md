@@ -2,10 +2,10 @@
 
 Eshu extension host trust and bounded execution. Pre-release: holds no cutover authority until its reviewed cutover. Refs #8877, part of #6707.
 
-> Dark posture (Leaf 2): this binary serves operator health only and
-> carries no enablement path. It never opens Postgres, never dials a claim
-> plane, and never claims work. Any claim-flow flag is a startup error.
-> The enabled flow arrives in a later leaf behind #9376 -> #9381.
+> Dark posture (default): this binary serves operator health only.
+> It never opens Postgres, never dials a claim plane, and never claims
+> work unless explicitly enabled (Leaf 8 wire-up, host#10). The enabled
+> flow stays behind #9376 -> #9381.
 
 ## Build and test
 
@@ -31,13 +31,20 @@ curl http://127.0.0.1:8082/metrics   # extension_host_claims_enabled 0
 | --- | --- | --- |
 | `--admin-listen` | `:8082` | admin listen address (health, readiness, metrics) |
 | `--version` | — | print the stamped build version and exit |
+| `--claims-enabled` | `false` | run the cutover worker loop (or `ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1`) |
+| `--dry-run` | `false` | shadow mode: live claims, compare sink, never commits (requires enablement) |
 
-There is no enablement flag. `--claims-enabled`, `--claim-plane-url`,
-and `--deployment-mode` are all startup errors by construction.
+Enablement is an OR gate: `--claims-enabled` or
+`ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1` (exactly `1`; anything else
+fail-closes naming the variable) enables, and `--claims-enabled=false`
+does not override an enabled env. `--dry-run` without enablement is a
+startup error (exit 2). The enabled path also requires
+`ESHU_EXTENSIONHOST_COLLECTOR_PATH`; every construction error names the
+variable, never the value.
 
 ## Operator signals
 
-- `GET /healthz` — `{"status":"ok","mode":"dark","version":"<stamp>"}`.
+- `GET /healthz` — `{"status":"ok","mode":"dark|enabled","claims_enabled":0|1,"version":"<stamp>"}`.
 - `GET /readyz` — serving readiness (no dependencies, so ready = serving).
 - `GET /metrics` — `extension_host_build_info`, `extension_host_uptime_seconds`,
   and `extension_host_claims_enabled 0` (zero claim flow, observably).
@@ -47,9 +54,11 @@ and `--deployment-mode` are all startup errors by construction.
 
 ## Configuration
 
-No credentials, no volumes, no environment contract. The dark image starts
-with no env at all; unknown flags fail closed at parse time. Resource
-footprint: one static binary, read-only root filesystem compatible.
+No credentials, no volumes. The dark image starts with no env at all;
+unknown flags fail closed at parse time. The enabled path reads
+`ESHU_EXTENSIONHOST_CUTOVER_ENABLED`, `ESHU_EXTENSIONHOST_COLLECTOR_PATH`,
+and the worker/claim-plane env contract. Resource footprint: one static
+binary, read-only root filesystem compatible.
 
 ## Provenance, release, rollback
 
