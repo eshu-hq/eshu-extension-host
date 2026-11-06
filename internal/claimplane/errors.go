@@ -4,16 +4,18 @@
 package claimplane
 
 import (
-	"errors"
 	"fmt"
 	"time"
 	"unicode/utf8"
+
+	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
 
-// ErrGrantDenied reports a refused producer grant at admission. Every grant
-// denial wraps it, so errors.Is(err, ErrGrantDenied) is the admission
-// check; the *DenyError reason names the cause.
-var ErrGrantDenied = errors.New("claimplane: grant denied")
+// ErrGrantDenied reports a refused producer grant at admission. It is the
+// seam-wide sentinel: an alias of cutovercontract.ErrGrantDenied, so every
+// grant denial on either side of the seam answers the same errors.Is
+// admission check; the *DenyError reason names the cause.
+var ErrGrantDenied = cutovercontract.ErrGrantDenied
 
 // Grant reasons mirror the in-tree component grant vocabulary as plain
 // strings (this reduction carries no component dependency).

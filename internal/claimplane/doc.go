@@ -8,24 +8,38 @@
 // imported: this module stays dependency-free by design, enforced by
 // TestModuleImportsAreStdlibOnly).
 //
-// Wire mapping (spec-pinned routes, headers, envelope, ack, and code
-// vocabulary; seam-minimal bodies for the cutovercontract surface —
-// spec_golden_test.go pins the literals and names the body-shape gap):
+// Wire mapping (spec-pinned routes, headers, envelope, ack, code
+// vocabulary, and ClaimNext request/response BODY field names —
+// spec_golden_test.go pins the literals and names the remaining gap):
 //
 //	every request carries Content-Type: application/json and
 //	Workflow-Protocol-Version: 1 (the server rejects other majors
 //	before any store call); every route is POST with a JSON body.
 //
 //	ClaimNext          POST /workflow.v1/ClaimNext
-//	                   request  {producer_id, producer_version, scopes, observed_at}
-//	                   response {issued, claim_id, lease_id, retry_after_seconds}
+//	                   request  {selector: {collector_kind,
+//	                             collector_instance_id, owner_id, claim_id},
+//	                             observed_at, lease_ttl_ns} — the spec
+//	                             ClaimNextRequest (workflowv1/claim.go:133)
+//	                   response {issued, grant: {work_item: {work_item_id},
+//	                             claim: {claim_id}}, deferral: {signal,
+//	                             retry_after_ns}} — the spec ClaimNextResponse
+//	                             read-subset (workflowv1/claim.go:154,
+//	                             pacing.go:203); a full server grant with
+//	                   extra fields decodes, the pre-conformance flat shape
+//	                   fails closed on the missing grant half
 //	                   empty queue: 404 with code "not_found" -> found=false, nil error
+//	                   unissued 200 always carries the deferral; a deferral-less
+//	                   unissued answer is invalid, never paced
 //	HeartbeatClaim     POST /workflow.v1/HeartbeatClaim
 //	CompleteClaim      POST /workflow.v1/CompleteClaim (+ result_json, verbatim JSON)
 //	ReleaseClaim       POST /workflow.v1/ReleaseClaim
 //	FailClaimRetryable POST /workflow.v1/FailClaimRetryable
 //	FailClaimTerminal  POST /workflow.v1/FailClaimTerminal
 //	                   mutation request {producer_id, claim_id, lease_id}
+//	                   (the host-seam ClaimOutcome; the spec fenced epoch
+//	                   needs work_item_id + fencing_token, which arrive
+//	                   with the commit lane — see the gap note below)
 //	                   mutation response is exactly {"ok":true} (strict decode,
 //	                   unknown fields and trailing data fail closed).
 //	Failures carry {"code","message","retry_after_seconds"}; the code
@@ -46,12 +60,19 @@
 // StaticGrants source carries its own Now so tests freeze both with one
 // func value. A zero ExpiresAt means no expiry.
 //
-// Seam conformance: the Client method set matches
-// cutovercontract.ClaimPlane exactly (ClaimNext on (producerID, scopes)
-// returning (Lease, bool, error); Heartbeat/Complete/Release/
-// FailRetryable/FailTerminal on Lease), and Lease is field-identical to
-// cutovercontract.Lease so conversion is a field copy. There is no import:
-// a same-module import path still counts as non-stdlib under the
-// whole-module boundary test, so conformance is structural until the
-// worker-loop lane extends that list deliberately.
+// Seam conformance: the Client implements cutovercontract.ClaimPlane
+// exactly (a compile assertion in client.go, not a structural echo):
+// ClaimNext takes the spec-shaped ClaimRequest and returns the seam
+// Lease; Heartbeat/Complete/Release/FailRetryable/FailTerminal take the
+// seam Lease, and mutations send the seam ClaimOutcome. The claimplane
+// package imports cutovercontract directly; the whole-module boundary
+// test (cmd/extension-host) carves this module itself out of the
+// stdlib-only guard, so no allowlist change was needed.
+//
+// Gap note: the mutation path still speaks the host-minimal body, not the
+// spec ClaimMutation (work_item_id, claim_id, fencing_token, owner_id,
+// observed_at, lease_duration_ns). The seam already retains everything the
+// migration needs — LeaseID carries the granted work item id — but the
+// fencing token has no holder yet, so the migration waits for the commit
+// lane that must carry the epoch anyway.
 package claimplane
