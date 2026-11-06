@@ -55,6 +55,22 @@ func cutoverEnabledByEnv(getenv func(string) string) (bool, error) {
 	}
 }
 
+// newClaimPlaneClient builds the production claim-plane client from the
+// worker wiring: the producer pin authorizes grants, the dedicated
+// instance knob feeds the plane's (kind, instance) match key, and the
+// scopes declare the claimed kinds. One constructor serves runEnabled and
+// the composition test alike, so the tested wiring is the shipped wiring.
+func newClaimPlaneClient(wcfg worker.Config) (*claimplane.Client, error) {
+	return claimplane.NewClient(claimplane.Config{
+		BaseURL:             wcfg.ClaimPlaneURL,
+		ProducerID:          wcfg.ProducerID,
+		ProducerVersion:     wcfg.ProducerVersion,
+		CollectorInstanceID: wcfg.CollectorInstanceID,
+		Scopes:              []string{wcfg.Scopes},
+		Grants:              &claimplane.StaticGrants{Grants: []claimplane.Grant{{ProducerID: wcfg.ProducerID}}},
+	})
+}
+
 // Committer is the outcome half of the claim-plane seam: finish a held
 // claim or record its failure. The claim-plane client satisfies it; the
 // dry-run compare sink satisfies it without ever completing. The worker
@@ -143,13 +159,7 @@ func runEnabled(ctx context.Context, cfg serverConfig, logger *slog.Logger, stde
 			"event_name", "runtime.startup.failed", "error", err)
 		return 1
 	}
-	plane, err := claimplane.NewClient(claimplane.Config{
-		BaseURL:         wcfg.ClaimPlaneURL,
-		ProducerID:      wcfg.ProducerID,
-		ProducerVersion: wcfg.ProducerVersion,
-		Scopes:          []string{wcfg.Scopes},
-		Grants:          &claimplane.StaticGrants{Grants: []claimplane.Grant{{ProducerID: wcfg.ProducerID}}},
-	})
+	plane, err := newClaimPlaneClient(wcfg)
 	if err != nil {
 		logger.Error("claim-plane client invalid, failing closed",
 			"event_name", "runtime.startup.failed", "error", err)

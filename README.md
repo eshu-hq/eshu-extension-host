@@ -39,8 +39,12 @@ Enablement is an OR gate: `--claims-enabled` or
 fail-closes naming the variable) enables, and `--claims-enabled=false`
 does not override an enabled env. `--dry-run` without enablement is a
 startup error (exit 2). The enabled path also requires
-`ESHU_EXTENSIONHOST_COLLECTOR_PATH`; every construction error names the
-variable, never the value.
+`ESHU_EXTENSIONHOST_COLLECTOR_PATH` and `ESHU_COMPONENT_COLLECTOR_INSTANCE_ID`;
+every construction error names the variable, never the value.
+`ESHU_COMPONENT_COLLECTOR_INSTANCE_ID` is the plane's `(kind, instance)`
+match key carried on every `ClaimNext`: it is required and never derived
+from `ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID`, so a producer whose id
+differs from the instance id still claims.
 
 ## Operator signals
 
@@ -57,7 +61,8 @@ variable, never the value.
 No credentials, no volumes. The dark image starts with no env at all;
 unknown flags fail closed at parse time. The enabled path reads
 `ESHU_EXTENSIONHOST_CUTOVER_ENABLED`, `ESHU_EXTENSIONHOST_COLLECTOR_PATH`,
-and the worker/claim-plane env contract. Resource footprint: one static
+`ESHU_COMPONENT_COLLECTOR_INSTANCE_ID`, and the rest of the
+worker/claim-plane env contract. Resource footprint: one static
 binary, read-only root filesystem compatible.
 
 ## Provenance, release, rollback

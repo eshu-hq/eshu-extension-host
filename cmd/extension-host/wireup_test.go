@@ -11,16 +11,19 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
+	"github.com/eshu-hq/eshu-extension-host/internal/worker"
 )
 
 func TestCutoverGateMatrix(t *testing.T) {
@@ -148,6 +151,7 @@ func TestEnabledConstructionErrorFailsWithoutValues(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_ENABLED", "")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID", "test-producer")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "test-instance")
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", secret)
 	t.Setenv("ESHU_EXTENSIONHOST_COLLECTOR_PATH", "sh")
 	var stderr lockedBuffer
@@ -215,6 +219,7 @@ func TestSignalCancelStopsEnabledLoop(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_ENABLED", "")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID", "test-producer")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "test-instance")
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", plane.URL)
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "10ms")
 	t.Setenv("ESHU_EXTENSIONHOST_COLLECTOR_PATH", "sh")
@@ -263,5 +268,95 @@ func TestSignalCancelStopsEnabledLoop(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("enabled run did not exit after context cancel")
+	}
+}
+
+// stubRunner completes every held claim immediately with an empty result.
+type stubRunner struct{}
+
+func (stubRunner) RunCollector(context.Context, []byte) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+
+func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
+	// Composition proof for the 8877 instance-id defect: with a producer
+	// id that differs from the collector instance id, the worker-built
+	// request must still pass the production client's selector
+	// validation and reach the plane carrying the dedicated instance
+	// knob. The loop absorbs ClaimNext errors as backoff, so the
+	// half-proofs (worker selector shape, client acceptance, enabled
+	// smoke) all stay green through a worker/client desync — only this
+	// path proves the shipped wiring claims.
+	var mu sync.Mutex
+	var selectors []cutovercontract.ClaimSelector
+	var completed int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/workflow.v1/ClaimNext":
+			var req cutovercontract.ClaimRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			selectors = append(selectors, req.Selector)
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"issued":true,"grant":{"work_item":{"work_item_id":"w1"},"claim":{"claim_id":"c1"}}}`)
+		case "/workflow.v1/CompleteClaim", "/workflow.v1/HeartbeatClaim":
+			mu.Lock()
+			if r.URL.Path == "/workflow.v1/CompleteClaim" {
+				completed++
+			}
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"code":"not_found","message":"empty"}`)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID", "producer-9")
+	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "instance-7")
+	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", srv.URL)
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "10ms")
+
+	wcfg, err := worker.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	plane, err := newClaimPlaneClient(wcfg)
+	if err != nil {
+		t.Fatalf("newClaimPlaneClient: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := worker.Loop(ctx, wcfg, stubRunner{}, plane); err != nil {
+		t.Fatalf("Loop: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(selectors) == 0 {
+		t.Fatal("no ClaimNext reached the stub plane: distinct ids claim nothing")
+	}
+	for _, sel := range selectors {
+		if sel.CollectorKind != wcfg.Scopes {
+			t.Errorf("collector_kind = %q, want scopes %q", sel.CollectorKind, wcfg.Scopes)
+		}
+		if sel.CollectorInstanceID != "instance-7" {
+			t.Errorf("collector_instance_id = %q, want the dedicated instance knob", sel.CollectorInstanceID)
+		}
+		if sel.OwnerID != "producer-9" {
+			t.Errorf("owner_id = %q, want the holder", sel.OwnerID)
+		}
+		if sel.ClaimID == "" {
+			t.Error("claim id is empty, want a fresh nonce per poll")
+		}
+	}
+	if completed == 0 {
+		t.Error("no CompleteClaim reached the stub plane")
 	}
 }
