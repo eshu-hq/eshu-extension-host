@@ -111,6 +111,10 @@ func TestRedactSecrets(t *testing.T) {
 		{name: "quoted key", in: `"client_secret"='hidden-value'`, leak: "hidden-value"},
 		{name: "password", in: `launch failed password=hunter2-value`, leak: "hunter2-value"},
 		{name: "passwd", in: `launch failed passwd=hunter2-value`, leak: "hunter2-value"},
+		{name: "auth", in: `launch failed auth=hunter2-value`, leak: "hunter2-value"},
+		{name: "credential", in: `launch failed credential=hunter2-value`, leak: "hunter2-value"},
+		{name: "pwd", in: `launch failed pwd=hunter2-value`, leak: "hunter2-value"},
+		{name: "bearer", in: `call denied Authorization: Bearer hunter2-value`, leak: "hunter2-value"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := redactSecrets(tc.in)
@@ -122,6 +126,10 @@ func TestRedactSecrets(t *testing.T) {
 	plain := "extension process failed: exit status 1 (no secrets here)"
 	if got := redactSecrets(plain); got != plain {
 		t.Fatalf("redactSecrets(%q) = %q, want it unchanged", plain, got)
+	}
+	// The term lookahead must not treat the auth prefix as a key.
+	if got := redactSecrets("author=someone"); got != "author=someone" {
+		t.Fatalf("redactSecrets overreached: %q", got)
 	}
 }
 

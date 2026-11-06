@@ -108,17 +108,50 @@ func strictDecode(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-// secretKeyPattern matches key=value and "key": value shapes whose key
-// looks secret-bearing (token, key, secret, password, or passwd,
-// case-insensitive) so the value can be masked before the message
-// leaves the runner.
-var secretKeyPattern = regexp.MustCompile(`(?i)([\w.\-]*?(?:token|key|secret|password|passwd)[\w.\-]*)(["']?\s*[:=]\s*["']?)([^\s"'\,}\]]+)`)
+// secretKeyPattern matches key=value and "key": value shapes. Whether
+// the key is secret-bearing is decided in code (secretKey), because Go
+// regexp has no lookahead to keep words like "author" unmasked.
+var secretKeyPattern = regexp.MustCompile(`(?i)([\w.\-]+)(["']?\s*[:=]\s*["']?)([^\s"'\,}\]]+)`)
+
+// secretKeyTerms are the exact key segments treated as secret-bearing,
+// case-insensitive. Segments split on '.', '_', and '-'.
+var secretKeyTerms = map[string]bool{
+	"token": true, "key": true, "secret": true, "password": true,
+	"passwd": true, "pwd": true, "auth": true, "credential": true,
+	"bearer": true,
+}
+
+// secretBearerPattern masks standalone bearer credentials with no
+// key anchor (e.g. "Authorization: Bearer <tok>").
+var secretBearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9\-._~+/=]+`)
+
+// secretKey reports whether a key reads as secret-bearing: any of its
+// separator-split segments must equal a known term exactly, so "author"
+// and "monkey" pass through while "api_key" and "auth" do not.
+func secretKey(key string) bool {
+	for _, segment := range strings.FieldsFunc(strings.ToLower(key), func(r rune) bool {
+		return r == '.' || r == '_' || r == '-'
+	}) {
+		if secretKeyTerms[segment] {
+			return true
+		}
+	}
+	return false
+}
 
 // redactSecrets masks secret-looking values in an error string. Matching
-// is key-anchored and case-insensitive; anything without a secret-bearing
-// key passes through unchanged.
+// is key-anchored and case-insensitive, plus standalone bearer
+// credentials; anything without a secret-bearing key passes through
+// unchanged.
 func redactSecrets(message string) string {
-	return secretKeyPattern.ReplaceAllString(message, `${1}${2}[redacted]`)
+	masked := secretKeyPattern.ReplaceAllStringFunc(message, func(match string) string {
+		parts := secretKeyPattern.FindStringSubmatch(match)
+		if len(parts) != 4 || !secretKey(parts[1]) {
+			return match
+		}
+		return parts[1] + parts[2] + "[redacted]"
+	})
+	return secretBearerPattern.ReplaceAllString(masked, `Bearer [redacted]`)
 }
 
 // limitedBuffer keeps at most limit bytes while counting every byte
