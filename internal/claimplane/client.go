@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
 
 // DefaultMaxResponseBytes bounds one protocol response body. Claim grants
@@ -51,57 +53,6 @@ type GrantSource interface {
 	Granted(producerID string) (ok bool, reason string)
 }
 
-// Grant is one static producer-grant row. A zero ExpiresAt means no expiry.
-type Grant struct {
-	ProducerID string
-	Revoked    bool
-	ExpiresAt  time.Time
-}
-
-// StaticGrants is the in-memory GrantSource for tests and fixed
-// deployments. Now supplies the evaluation clock; nil reads the wall clock
-// (UTC) on every call.
-type StaticGrants struct {
-	Grants []Grant
-	Now    func() time.Time
-}
-
-// Granted evaluates the rows for one producer under the evaluation clock.
-func (s *StaticGrants) Granted(producerID string) (bool, string) {
-	now := s.Now
-	if now == nil {
-		now = func() time.Time { return time.Now().UTC() }
-	}
-	at := now()
-	var matched, live bool
-	for _, g := range s.Grants {
-		if g.ProducerID != producerID {
-			continue
-		}
-		matched = true
-		if g.Revoked {
-			continue
-		}
-		if !g.ExpiresAt.IsZero() && !at.Before(g.ExpiresAt) {
-			continue
-		}
-		live = true
-	}
-	switch {
-	case !matched:
-		return false, ReasonNoMatchingGrant
-	case !live:
-		for _, g := range s.Grants {
-			if g.ProducerID == producerID && !g.Revoked {
-				return false, ReasonExpired
-			}
-		}
-		return false, ReasonRevoked
-	default:
-		return true, ReasonGranted
-	}
-}
-
 // Config builds a Client. BaseURL, ProducerID, ProducerVersion, Scopes, and
 // Grants are required; everything else has a safe default. The producer
 // identity is fixed here at construction and never taken from the wire, so
@@ -128,17 +79,11 @@ type Config struct {
 	Clock func() time.Time
 }
 
-// Lease identifies one held claim. IDs are opaque strings minted by the
-// plane; the worker never interprets them. Field-identical to
-// cutovercontract.Lease by construction.
-type Lease struct {
-	ClaimID string
-	LeaseID string
-}
-
 // Client is the remote claimed-service seam: claim, heartbeat, terminal
 // outcomes, and release over HTTP. A Client holds no core implementation
-// handle and is safe for concurrent use.
+// handle and is safe for concurrent use. It implements
+// cutovercontract.ClaimPlane exactly: the seam unification is a compile
+// check, not a structural echo.
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -149,6 +94,9 @@ type Client struct {
 	grants  GrantSource
 	max     int64
 }
+
+// compile check: the client is the ClaimPlane seam implementation.
+var _ cutovercontract.ClaimPlane = (*Client)(nil)
 
 // NewClient validates the seam configuration fail-closed: a client that
 // cannot name its holder, its scopes, or its grant source is never built.
@@ -193,28 +141,44 @@ func NewClient(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// claimNextRequest is the minimal ClaimNext body.
-type claimNextRequest struct {
-	ProducerID      string `json:"producer_id"`
-	ProducerVersion string `json:"producer_version"`
-	Scopes          string `json:"scopes"`
-	ObservedAt      string `json:"observed_at"`
-}
-
-// claimNextResponse is the minimal ClaimNext answer.
+// claimNextResponse decodes the spec ClaimNextResponse read-subset
+// (eshu-workflow@v0.1.0 workflowv1/claim.go:154-157): issued plus exactly
+// one of a grant or a deferral. Only the fields this seam reads are
+// modelled — the granted work item and claim ids, and the deferral signal
+// with its retry delay. Decode is deliberately non-strict
+// (json.Unmarshal: unknown fields tolerated, trailing data rejected), so
+// the full server grant with its thirty-odd fields decodes while the
+// pre-conformance flat shape fails closed on the missing grant half. This
+// mirrors the in-tree client, which decodes with a plain Decoder.
 type claimNextResponse struct {
-	Issued            bool   `json:"issued"`
-	ClaimID           string `json:"claim_id,omitempty"`
-	LeaseID           string `json:"lease_id,omitempty"`
-	RetryAfterSeconds int64  `json:"retry_after_seconds,omitempty"`
+	Issued   bool          `json:"issued"`
+	Grant    claimGrant    `json:"grant"`
+	Deferral claimDeferral `json:"deferral"`
 }
 
-// mutationRequest is the minimal lifecycle body; Complete adds Result.
-type mutationRequest struct {
-	ProducerID string          `json:"producer_id"`
-	ClaimID    string          `json:"claim_id"`
-	LeaseID    string          `json:"lease_id"`
-	Result     json.RawMessage `json:"result_json,omitempty"`
+// claimGrant is the spec ClaimedWorkItem read-subset: the work item and
+// claim ids this seam maps into a Lease.
+type claimGrant struct {
+	WorkItem claimWorkItem `json:"work_item"`
+	Claim    claimRef      `json:"claim"`
+}
+
+// claimWorkItem carries the granted work item id.
+type claimWorkItem struct {
+	WorkItemID string `json:"work_item_id"`
+}
+
+// claimRef carries the granted claim id.
+type claimRef struct {
+	ClaimID string `json:"claim_id"`
+}
+
+// claimDeferral is the spec ClaimPacingDeferral read-subset
+// (eshu-workflow@v0.1.0 workflowv1/pacing.go:203-210): the pacing signal
+// and the grant delay in nanoseconds the runner must wait.
+type claimDeferral struct {
+	Signal     string        `json:"signal"`
+	RetryAfter time.Duration `json:"retry_after_ns"`
 }
 
 // ackResponse is the acknowledgement every lifecycle operation answers
@@ -232,76 +196,90 @@ type errorEnvelope struct {
 
 // ClaimNext asks the plane for the next eligible work item. It returns
 // found=false with a nil error on the empty-queue signal (404 not_found).
-// Input is validated locally first and the grant is rechecked before any
-// byte touches the wire.
-func (c *Client) ClaimNext(ctx context.Context, producerID, scopes string) (Lease, bool, error) {
+// The request is the spec ClaimNextRequest: producer identity and scopes
+// arrive folded into req.Selector (there is no top-level producer slot in
+// the spec), so the selector is validated against the configured holder
+// before any byte touches the wire. A zero ObservedAt is stamped from the
+// client clock. The answer decodes the spec ClaimNextResponse read-subset:
+// issued maps the granted claim and work item ids into a Lease while an
+// unissued answer carries the pacing deferral.
+func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest) (cutovercontract.Lease, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return Lease{}, false, fmt.Errorf("claimplane ClaimNext: %w", err)
+		return cutovercontract.Lease{}, false, fmt.Errorf("claimplane ClaimNext: %w", err)
 	}
-	if strings.TrimSpace(producerID) == "" {
-		return Lease{}, false, errors.New("claimplane ClaimNext: producer id is required")
+	sel := req.Selector
+	if strings.TrimSpace(string(sel.CollectorKind)) == "" {
+		return cutovercontract.Lease{}, false, errors.New("claimplane ClaimNext: collector kind is required")
 	}
-	if producerID != c.prodID {
-		return Lease{}, false, fmt.Errorf(
-			"claimplane ClaimNext: caller identity %q differs from configured holder %q",
-			producerID, c.prodID,
+	if sel.CollectorInstanceID != c.prodID || sel.OwnerID != c.prodID {
+		return cutovercontract.Lease{}, false, fmt.Errorf(
+			"claimplane ClaimNext: selector identity %q/%q differs from configured holder %q",
+			sel.CollectorInstanceID, sel.OwnerID, c.prodID,
 		)
 	}
-	if strings.TrimSpace(scopes) == "" {
-		return Lease{}, false, errors.New("claimplane ClaimNext: scopes are required")
+	if strings.TrimSpace(sel.ClaimID) == "" {
+		return cutovercontract.Lease{}, false, errors.New("claimplane ClaimNext: selector claim id is required")
 	}
-	if !scopeDeclared(c.scopes, scopes) {
-		return Lease{}, false, &DenyError{Reason: ReasonScopeMismatch, ProducerID: c.prodID}
+	if !scopeDeclared(c.scopes, string(sel.CollectorKind)) {
+		return cutovercontract.Lease{}, false, &DenyError{Reason: ReasonScopeMismatch, ProducerID: c.prodID}
+	}
+	if req.LeaseTTL <= 0 {
+		return cutovercontract.Lease{}, false, errors.New("claimplane ClaimNext: lease TTL must be positive")
 	}
 	if err := c.checkGrant(ctx); err != nil {
-		return Lease{}, false, err
+		return cutovercontract.Lease{}, false, err
 	}
-	req := claimNextRequest{
-		ProducerID:      c.prodID,
-		ProducerVersion: c.version,
-		Scopes:          scopes,
-		ObservedAt:      c.clock().UTC().Format(time.RFC3339),
+	wire := req
+	if wire.ObservedAt.IsZero() {
+		wire.ObservedAt = c.clock().UTC()
 	}
-	status, envelope, body, err := c.roundTrip(ctx, "ClaimNext", pathClaimNext, req)
+	status, envelope, body, err := c.roundTrip(ctx, "ClaimNext", pathClaimNext, wire)
 	if err != nil {
-		return Lease{}, false, err
+		return cutovercontract.Lease{}, false, err
 	}
 	switch {
 	case status == http.StatusNotFound && envelope.Code == CodeNotFound:
-		return Lease{}, false, nil
+		return cutovercontract.Lease{}, false, nil
 	case status == http.StatusTooManyRequests || envelope.Code == CodePaced:
 		retry := time.Duration(envelope.RetryAfterSeconds) * time.Second
-		return Lease{}, false, &CallError{
+		return cutovercontract.Lease{}, false, &CallError{
 			Op:         "ClaimNext",
 			Code:       CodePaced,
 			Message:    boundMessage(envelope.Message),
 			RetryAfter: retry,
 		}
 	case status < 200 || status > 299:
-		return Lease{}, false, c.callError("ClaimNext", status, envelope)
+		return cutovercontract.Lease{}, false, c.callError("ClaimNext", status, envelope)
 	}
 	var resp claimNextResponse
-	if err := decodeStrict(body, &resp); err != nil {
-		return Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, err.Error())
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, err.Error())
 	}
 	if !resp.Issued {
-		retry := time.Duration(resp.RetryAfterSeconds) * time.Second
-		return Lease{}, false, &CallError{Op: "ClaimNext", Code: CodePaced, RetryAfter: retry}
+		if strings.TrimSpace(resp.Deferral.Signal) == "" {
+			return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "unissued claim without deferral")
+		}
+		return cutovercontract.Lease{}, false, &CallError{
+			Op:         "ClaimNext",
+			Code:       CodePaced,
+			Message:    boundMessage("claim deferred: " + resp.Deferral.Signal),
+			RetryAfter: resp.Deferral.RetryAfter,
+		}
 	}
-	if strings.TrimSpace(resp.ClaimID) == "" || strings.TrimSpace(resp.LeaseID) == "" {
-		return Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without ids")
+	if strings.TrimSpace(resp.Grant.Claim.ClaimID) == "" || strings.TrimSpace(resp.Grant.WorkItem.WorkItemID) == "" {
+		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without ids")
 	}
-	return Lease{ClaimID: resp.ClaimID, LeaseID: resp.LeaseID}, true, nil
+	return cutovercontract.Lease{ClaimID: resp.Grant.Claim.ClaimID, LeaseID: resp.Grant.WorkItem.WorkItemID}, true, nil
 }
 
 // Heartbeat renews the lease on a held claim epoch.
-func (c *Client) Heartbeat(ctx context.Context, lease Lease) error {
+func (c *Client) Heartbeat(ctx context.Context, lease cutovercontract.Lease) error {
 	return c.mutate(ctx, "HeartbeatClaim", pathHeartbeatClaim, lease, nil)
 }
 
 // Complete finishes a held claim after its generation committed. The result
 // must be non-empty verbatim JSON; anything else fails closed locally.
-func (c *Client) Complete(ctx context.Context, lease Lease, resultJSON []byte) error {
+func (c *Client) Complete(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
 	if len(resultJSON) == 0 {
 		return errors.New("claimplane CompleteClaim: result is required")
 	}
@@ -309,23 +287,23 @@ func (c *Client) Complete(ctx context.Context, lease Lease, resultJSON []byte) e
 }
 
 // Release returns a held claim unworked.
-func (c *Client) Release(ctx context.Context, lease Lease) error {
+func (c *Client) Release(ctx context.Context, lease cutovercontract.Lease) error {
 	return c.mutate(ctx, "ReleaseClaim", pathReleaseClaim, lease, nil)
 }
 
 // FailRetryable records a retryable claim failure.
-func (c *Client) FailRetryable(ctx context.Context, lease Lease) error {
+func (c *Client) FailRetryable(ctx context.Context, lease cutovercontract.Lease) error {
 	return c.mutate(ctx, "FailClaimRetryable", pathFailClaimRetryable, lease, nil)
 }
 
 // FailTerminal records a terminal claim failure.
-func (c *Client) FailTerminal(ctx context.Context, lease Lease) error {
+func (c *Client) FailTerminal(ctx context.Context, lease cutovercontract.Lease) error {
 	return c.mutate(ctx, "FailClaimTerminal", pathFailClaimTerminal, lease, nil)
 }
 
 // mutate sends one fenced lifecycle mutation. A 2xx counts as success only
 // when the body is exactly the {"ok":true} acknowledgement.
-func (c *Client) mutate(ctx context.Context, op, path string, lease Lease, result []byte) error {
+func (c *Client) mutate(ctx context.Context, op, path string, lease cutovercontract.Lease, result []byte) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("claimplane %s: %w", op, err)
 	}
@@ -335,7 +313,7 @@ func (c *Client) mutate(ctx context.Context, op, path string, lease Lease, resul
 	if err := c.checkGrant(ctx); err != nil {
 		return err
 	}
-	req := mutationRequest{ProducerID: c.prodID, ClaimID: lease.ClaimID, LeaseID: lease.LeaseID}
+	req := cutovercontract.ClaimOutcome{ProducerID: c.prodID, ClaimID: lease.ClaimID, LeaseID: lease.LeaseID}
 	if result != nil {
 		req.Result = json.RawMessage(result)
 	}

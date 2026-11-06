@@ -26,6 +26,7 @@ type planeCall struct {
 	op     string
 	lease  cutovercontract.Lease
 	result []byte
+	req    cutovercontract.ClaimRequest
 }
 
 type fakePlane struct {
@@ -36,10 +37,10 @@ type fakePlane struct {
 	heartbeats  int
 }
 
-func (f *fakePlane) ClaimNext(_ context.Context, _, _ string) (cutovercontract.Lease, bool, error) {
+func (f *fakePlane) ClaimNext(_ context.Context, req cutovercontract.ClaimRequest) (cutovercontract.Lease, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, planeCall{op: "ClaimNext"})
+	f.calls = append(f.calls, planeCall{op: "ClaimNext", req: req})
 	if len(f.answers) == 0 {
 		return cutovercontract.Lease{}, false, nil
 	}
@@ -164,6 +165,57 @@ func TestLoopRejectsNilCollaborators(t *testing.T) {
 	bad.PollInterval = 0
 	if err := Loop(context.Background(), bad, runner, plane); err == nil {
 		t.Error("zero poll interval: got nil error, want fail-closed")
+	}
+	bad = cfg
+	bad.ProducerVersion = "  "
+	if err := Loop(context.Background(), bad, runner, plane); err == nil {
+		t.Error("empty producer version: got nil error, want fail-closed")
+	}
+}
+
+func TestLoopClaimRequestFromConfig(t *testing.T) {
+	// The worker builds the spec-shaped request from Config: the scope
+	// kind selects the collector kind, the producer id pins both holder
+	// slots, the lease TTL rides as the requested hold, and every poll
+	// mints a fresh claim id so the plane never sees a replayed selector.
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	plane := &fakePlane{answers: []claimAnswer{
+		{lease: testLease(), found: true},
+		{lease: testLease(), found: true},
+	}}
+	cfg := testConfig()
+	if err := runLoop(t, cfg, runner, plane, 2*time.Second); err != nil {
+		t.Fatalf("Loop: %v", err)
+	}
+	plane.mu.Lock()
+	defer plane.mu.Unlock()
+	var reqs []cutovercontract.ClaimRequest
+	for _, c := range plane.calls {
+		if c.op == "ClaimNext" {
+			reqs = append(reqs, c.req)
+		}
+	}
+	if len(reqs) < 2 {
+		t.Fatalf("ClaimNext calls = %d, want at least 2", len(reqs))
+	}
+	for i, req := range reqs {
+		sel := req.Selector
+		if string(sel.CollectorKind) != cfg.Scopes {
+			t.Errorf("req %d collector_kind = %q, want scopes %q", i, sel.CollectorKind, cfg.Scopes)
+		}
+		if sel.CollectorInstanceID != cfg.ProducerID || sel.OwnerID != cfg.ProducerID {
+			t.Errorf("req %d identity = %q/%q, want producer %q on both",
+				i, sel.CollectorInstanceID, sel.OwnerID, cfg.ProducerID)
+		}
+		if sel.ClaimID == "" {
+			t.Errorf("req %d claim id is empty, want a fresh nonce per poll", i)
+		}
+		if req.LeaseTTL != cfg.LeaseTTL {
+			t.Errorf("req %d lease TTL = %v, want %v", i, req.LeaseTTL, cfg.LeaseTTL)
+		}
+	}
+	if reqs[0].Selector.ClaimID == reqs[1].Selector.ClaimID {
+		t.Errorf("claim ids repeat %q, want a fresh nonce per poll", reqs[0].Selector.ClaimID)
 	}
 }
 

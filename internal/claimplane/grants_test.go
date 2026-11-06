@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
 
 // mutableGrants is a concurrency-safe scriptable GrantSource.
@@ -37,7 +39,7 @@ func (m *mutableGrants) set(ok bool, reason string) {
 
 func TestClaimNextRevokedGrantDeniesWithoutWire(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c","lease_id":"l"}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l", "c")},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
@@ -48,7 +50,7 @@ func TestClaimNextRevokedGrantDeniesWithoutWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err = c.ClaimNext(context.Background(), testClaimRequest())
 	if !errors.Is(err, ErrGrantDenied) {
 		t.Fatalf("ClaimNext revoked = %v, want wrapped ErrGrantDenied", err)
 	}
@@ -64,7 +66,7 @@ func TestClaimNextRevokedGrantDeniesWithoutWire(t *testing.T) {
 func TestClaimNextExpiredGrantViaInjectedClock(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c","lease_id":"l"}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l", "c")},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
@@ -80,7 +82,7 @@ func TestClaimNextExpiredGrantViaInjectedClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err = c.ClaimNext(context.Background(), testClaimRequest())
 	if !errors.Is(err, ErrGrantDenied) {
 		t.Fatalf("ClaimNext expired = %v, want wrapped ErrGrantDenied", err)
 	}
@@ -94,7 +96,7 @@ func TestClaimNextExpiredGrantViaInjectedClock(t *testing.T) {
 
 	// Control: the same grant set before expiry proceeds to the wire.
 	grants.Now = func() time.Time { return now.Add(-2 * time.Hour) }
-	lease, found, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	lease, found, err := c.ClaimNext(context.Background(), testClaimRequest())
 	if err != nil || !found || lease.ClaimID != "c" || lease.LeaseID != "l" {
 		t.Fatalf("ClaimNext unexpired = %+v,%v,%v, want lease c/l", lease, found, err)
 	}
@@ -114,12 +116,12 @@ func TestGrantRecheckDeniesLifecycleWithoutWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if err := c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"}); err != nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err != nil {
 		t.Fatalf("Heartbeat allowed = %v, want nil", err)
 	}
 	mutable.set(false, ReasonRevoked)
 	before := stub.hitCount()
-	err = c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"})
+	err = c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"})
 	if !errors.Is(err, ErrGrantDenied) {
 		t.Fatalf("Heartbeat revoked = %v, want wrapped ErrGrantDenied", err)
 	}
@@ -134,7 +136,9 @@ func TestProducerMismatchDenied(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "other-producer", "ec2:DescribeInstances")
+	req := testClaimRequest()
+	req.Selector.OwnerID = "other-producer"
+	_, _, err := c.ClaimNext(context.Background(), req)
 	if err == nil {
 		t.Fatal("ClaimNext mismatched producer = nil, want deny")
 	}
@@ -154,7 +158,7 @@ func TestNoMatchingGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err = c.ClaimNext(context.Background(), testClaimRequest())
 	var deny *DenyError
 	if !errors.As(err, &deny) || deny.Reason != ReasonNoMatchingGrant {
 		t.Fatalf("ClaimNext unmatched = %v, want %q", err, ReasonNoMatchingGrant)
@@ -166,13 +170,15 @@ func TestNoMatchingGrant(t *testing.T) {
 
 func TestClaimNextUndeclaredScopeDeniedWithoutWire(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c","lease_id":"l"}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l", "c")},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s3:NotDeclared")
+	req := testClaimRequest()
+	req.Selector.CollectorKind = "s3:NotDeclared"
+	_, _, err := c.ClaimNext(context.Background(), req)
 	var deny *DenyError
 	if !errors.As(err, &deny) || deny.Reason != ReasonScopeMismatch {
 		t.Fatalf("ClaimNext undeclared scope = %v, want reason %q", deny, ReasonScopeMismatch)
@@ -196,7 +202,7 @@ func TestEmptyReasonDegradesToUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err = c.ClaimNext(context.Background(), testClaimRequest())
 	var deny *DenyError
 	if !errors.As(err, &deny) || deny.Reason != ReasonGrantsUnreadable {
 		t.Fatalf("ClaimNext empty reason = %v, want %q", err, ReasonGrantsUnreadable)

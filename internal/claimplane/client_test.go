@@ -10,12 +10,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
 
 // stubPlane records hits and serves scripted bodies per path.
@@ -27,6 +30,7 @@ type stubPlane struct {
 	headers  []http.Header
 	bodies   map[string]stubResponse
 	observed []string
+	rawClaim []string
 }
 
 type stubResponse struct {
@@ -53,10 +57,14 @@ func (s *stubPlane) handler() http.HandlerFunc {
 			return
 		}
 		if r.URL.Path == "/workflow.v1/ClaimNext" {
-			var req claimNextRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			raw, _ := io.ReadAll(r.Body)
+			s.mu.Lock()
+			s.rawClaim = append(s.rawClaim, string(raw))
+			s.mu.Unlock()
+			var req cutovercontract.ClaimRequest
+			if err := json.Unmarshal(raw, &req); err == nil {
 				s.mu.Lock()
-				s.observed = append(s.observed, req.ObservedAt)
+				s.observed = append(s.observed, req.ObservedAt.UTC().Format(time.RFC3339))
 				s.mu.Unlock()
 			}
 		}
@@ -89,6 +97,29 @@ func newTestClient(t *testing.T, url string) *Client {
 		t.Fatalf("NewClient: %v", err)
 	}
 	return c
+}
+
+// testClaimRequest builds the spec-shaped request the worker sends: the
+// producer identity and scopes folded into the selector, ObservedAt left
+// zero for the client clock to stamp.
+func testClaimRequest() cutovercontract.ClaimRequest {
+	return cutovercontract.ClaimRequest{
+		Selector: cutovercontract.ClaimSelector{
+			CollectorKind:       "ec2:DescribeInstances",
+			CollectorInstanceID: "test-producer",
+			OwnerID:             "test-producer",
+			ClaimID:             "claim-1",
+		},
+		LeaseTTL: time.Minute,
+	}
+}
+
+// specGrantBody renders the spec ClaimNextResponse grant half: issued with
+// a grant carrying the work item and claim ids. Extra server fields are
+// fine — the client decodes a forward-compatible read-subset.
+func specGrantBody(workID, claimID string) string {
+	return `{"issued":true,"grant":{"work_item":{"work_item_id":"` + workID +
+		`"},"claim":{"claim_id":"` + claimID + `"}}}`
 }
 
 func TestNewClientRejectsBadBaseURL(t *testing.T) {
@@ -127,7 +158,7 @@ func TestNewClientDefaultsMaxBytes(t *testing.T) {
 
 func TestNewClientNilClock(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c","lease_id":"l"}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l", "c")},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
@@ -138,7 +169,7 @@ func TestNewClientNilClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient nil clock: %v", err)
 	}
-	if _, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances"); err != nil {
+	if _, _, err := c.ClaimNext(context.Background(), testClaimRequest()); err != nil {
 		t.Fatalf("ClaimNext nil clock = %v, want lease", err)
 	}
 }
@@ -152,18 +183,38 @@ func TestClaimNextValidation(t *testing.T) {
 	ctx := context.Background()
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
+	mutate := func(f func(*cutovercontract.ClaimRequest)) cutovercontract.ClaimRequest {
+		req := testClaimRequest()
+		f(&req)
+		return req
+	}
 	inputs := []struct {
-		name   string
-		pid    string
-		scopes string
-		ctx    context.Context
+		name string
+		req  cutovercontract.ClaimRequest
+		ctx  context.Context
 	}{
-		{name: "empty producer", pid: "", scopes: "s", ctx: ctx},
-		{name: "empty scopes", pid: "test-producer", scopes: "  ", ctx: ctx},
-		{name: "cancelled ctx", pid: "test-producer", scopes: "s", ctx: cancelled},
+		{name: "empty kind", req: mutate(func(r *cutovercontract.ClaimRequest) {
+			r.Selector.CollectorKind = "  "
+		}), ctx: ctx},
+		{name: "mismatched owner", req: mutate(func(r *cutovercontract.ClaimRequest) {
+			r.Selector.OwnerID = "other-producer"
+		}), ctx: ctx},
+		{name: "mismatched instance", req: mutate(func(r *cutovercontract.ClaimRequest) {
+			r.Selector.CollectorInstanceID = "other-producer"
+		}), ctx: ctx},
+		{name: "empty claim id", req: mutate(func(r *cutovercontract.ClaimRequest) {
+			r.Selector.ClaimID = ""
+		}), ctx: ctx},
+		{name: "undeclared kind", req: mutate(func(r *cutovercontract.ClaimRequest) {
+			r.Selector.CollectorKind = "s3:NotDeclared"
+		}), ctx: ctx},
+		{name: "non-positive TTL", req: mutate(func(r *cutovercontract.ClaimRequest) {
+			r.LeaseTTL = 0
+		}), ctx: ctx},
+		{name: "cancelled ctx", req: testClaimRequest(), ctx: cancelled},
 	}
 	for _, in := range inputs {
-		if _, _, err := c.ClaimNext(in.ctx, in.pid, in.scopes); err == nil {
+		if _, _, err := c.ClaimNext(in.ctx, in.req); err == nil {
 			t.Fatalf("ClaimNext %s = nil, want error", in.name)
 		}
 	}
@@ -174,7 +225,7 @@ func TestClaimNextValidation(t *testing.T) {
 
 func TestClaimNextTruncatedBody(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c","lease_id":"l"}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l", "c")},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
@@ -185,7 +236,7 @@ func TestClaimNextTruncatedBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err = c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeResponseTooLarge {
 		t.Fatalf("ClaimNext oversize = %v, want code %q", err, CodeResponseTooLarge)
@@ -200,7 +251,7 @@ func TestClaimNextNon2xx(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != "invalid" || call.Op != "ClaimNext" {
 		t.Fatalf("ClaimNext 500 = %v, want op/ClaimNext code/invalid", err)
@@ -212,7 +263,7 @@ func TestClaimNextEmptyQueue(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, found, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, found, err := c.ClaimNext(context.Background(), testClaimRequest())
 	if err != nil || found {
 		t.Fatalf("ClaimNext empty = found %v err %v, want false/nil", found, err)
 	}
@@ -220,13 +271,13 @@ func TestClaimNextEmptyQueue(t *testing.T) {
 
 func TestClaimNextRoundTrip(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c1","lease_id":"l1"}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l1", "c1")},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	lease, found, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	lease, found, err := c.ClaimNext(context.Background(), testClaimRequest())
 	if err != nil || !found {
 		t.Fatalf("ClaimNext = %v,%v, want found lease", lease, err)
 	}
@@ -244,20 +295,40 @@ func TestClaimNextRoundTrip(t *testing.T) {
 }
 
 func TestClaimNextIssuedFalseIsPaced(t *testing.T) {
+	// The spec carries the pacing verdict inline: an unissued 200 always
+	// carries a deferral with retry_after_ns (workflowv1/pacing.go:203).
 	stub := &stubPlane{bodies: map[string]stubResponse{
-		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":false,"retry_after_seconds":7}`},
+		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":false,"deferral":{"signal":"depth","retry_after_ns":7000000000}}`},
 	}}
 	srv := httptest.NewServer(stub.handler())
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, found, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, found, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || !call.Paced() || found {
 		t.Fatalf("ClaimNext issued=false = %v,%v, want paced", found, err)
 	}
 	if call.RetryAfter != 7*time.Second {
 		t.Fatalf("RetryAfter = %v, want 7s", call.RetryAfter)
+	}
+}
+
+func TestClaimNextIssuedFalseWithoutDeferralIsInvalid(t *testing.T) {
+	// An unissued 200 without a deferral violates the spec response
+	// contract (ClaimNextResponse.Validate: the unissued path requires a
+	// valid deferral), so it fails closed as invalid, never as paced.
+	stub := &stubPlane{bodies: map[string]stubResponse{
+		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":false}`},
+	}}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
+	var call *CallError
+	if !errors.As(err, &call) || call.Code != CodeInvalid {
+		t.Fatalf("ClaimNext deferral-less unissued = %v, want invalid", err)
 	}
 }
 
@@ -269,7 +340,7 @@ func TestClaimNext429IsPaced(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || !call.Paced() || call.RetryAfter != 3*time.Second {
 		t.Fatalf("ClaimNext 429 = %v, want paced with 3s", err)
@@ -287,7 +358,7 @@ func TestClaimNextIssuedWithoutIDs(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeInvalid {
 		t.Fatalf("ClaimNext id-less issue = %v, want invalid", err)
@@ -295,13 +366,16 @@ func TestClaimNextIssuedWithoutIDs(t *testing.T) {
 }
 
 func TestClaimNextDecodeErrors(t *testing.T) {
-	for _, body := range []string{"", `{"issued":true,"claim_id":"c","lease_id":"l","bogus":1}`} {
+	// The pre-conformance minimal shape is not the spec: an issued body
+	// without the grant half fails closed even though unknown fields
+	// decode tolerantly.
+	for _, body := range []string{"", "{oops", `{"issued":true,"claim_id":"c","lease_id":"l"}`} {
 		stub := &stubPlane{bodies: map[string]stubResponse{
 			"/workflow.v1/ClaimNext": {status: 200, body: body},
 		}}
 		srv := httptest.NewServer(stub.handler())
 		c := newTestClient(t, srv.URL)
-		_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+		_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 		var call *CallError
 		if !errors.As(err, &call) || call.Code != CodeInvalid {
 			t.Errorf("ClaimNext body %q = %v, want invalid", body, err)
@@ -316,7 +390,7 @@ func TestTransportError(t *testing.T) {
 	srv.Close()
 
 	c := newTestClient(t, url)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeTransport {
 		t.Fatalf("ClaimNext closed server = %v, want transport", err)
@@ -331,7 +405,7 @@ func TestUnexpectedStatus(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeUnexpectedStatus {
 		t.Fatalf("ClaimNext 599 = %v, want %q", err, CodeUnexpectedStatus)
@@ -346,7 +420,7 @@ func TestBoundMessageTruncates(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
 	var call *CallError
 	if !errors.As(err, &call) {
 		t.Fatalf("ClaimNext 500 = %v, want CallError", err)

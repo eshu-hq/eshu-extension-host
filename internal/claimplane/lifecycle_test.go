@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
 
 func TestLifecycleRoundTrip(t *testing.T) {
@@ -30,7 +32,7 @@ func TestLifecycleRoundTrip(t *testing.T) {
 
 	c := newTestClient(t, srv.URL)
 	ctx := context.Background()
-	lease := Lease{ClaimID: "c1", LeaseID: "l1"}
+	lease := cutovercontract.Lease{ClaimID: "c1", LeaseID: "l1"}
 	if err := c.Heartbeat(ctx, lease); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
@@ -61,7 +63,7 @@ func TestLifecycleAckNotOK(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	err := c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"})
+	err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"})
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeInvalid {
 		t.Fatalf("Heartbeat ok=false = %v, want code %q", err, CodeInvalid)
@@ -76,7 +78,7 @@ func TestStrictDecodeRejectsTrailingData(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"}); err == nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err == nil {
 		t.Fatal("Heartbeat trailing data = nil, want invalid error")
 	}
 }
@@ -89,7 +91,7 @@ func TestAckUnknownFieldRejected(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"}); err == nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err == nil {
 		t.Fatal("Heartbeat unknown field = nil, want invalid error")
 	}
 }
@@ -102,10 +104,10 @@ func TestMutateValidation(t *testing.T) {
 	c := newTestClient(t, srv.URL)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := c.Heartbeat(context.Background(), Lease{}); err == nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{}); err == nil {
 		t.Fatal("Heartbeat empty lease = nil, want error")
 	}
-	if err := c.Heartbeat(cancelled, Lease{ClaimID: "c", LeaseID: "l"}); err == nil {
+	if err := c.Heartbeat(cancelled, cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err == nil {
 		t.Fatal("Heartbeat cancelled ctx = nil, want error")
 	}
 	if n := stub.hitCount(); n != 0 {
@@ -119,7 +121,7 @@ func TestCompleteRejectsEmptyResult(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Complete(context.Background(), Lease{ClaimID: "c", LeaseID: "l"}, nil); err == nil {
+	if err := c.Complete(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}, nil); err == nil {
 		t.Fatal("Complete empty result = nil, want validation error")
 	}
 	if n := stub.hitCount(); n != 0 {
@@ -133,7 +135,7 @@ func TestCompleteRejectsNonJSONResult(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Complete(context.Background(), Lease{ClaimID: "c", LeaseID: "l"}, []byte("{oops")); err == nil {
+	if err := c.Complete(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}, []byte("{oops")); err == nil {
 		t.Fatal("Complete non-JSON result = nil, want marshal error")
 	}
 	if n := stub.hitCount(); n != 0 {
@@ -149,7 +151,7 @@ func TestRetryAfterMapping(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	err := c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"})
+	err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"})
 	var call *CallError
 	if !errors.As(err, &call) || call.RetryAfter != 9*time.Second {
 		t.Fatalf("Heartbeat 500 = %v, want 9s retry", err)
@@ -170,7 +172,7 @@ func TestConcurrentUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"})
+			errs <- c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"})
 		}()
 	}
 	wg.Wait()
