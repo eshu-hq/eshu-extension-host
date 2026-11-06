@@ -53,18 +53,26 @@ func TestParseFlagsDefaultsToDarkAdminListen(t *testing.T) {
 }
 
 func TestParseFlagsExposeNoEnablementPath(t *testing.T) {
+	// The cutover gate (eshu-hq/eshu#8877) adds exactly two flags to the
+	// dark surface: --claims-enabled and --dry-run. The plane URL, lease
+	// timings, and producer identity stay environment-only by design, so
+	// they never appear here.
 	names := flagNames()
-	if len(names) != 2 {
-		t.Fatalf("flag set = %v, want exactly [admin-listen version]", names)
+	want := []string{"admin-listen", "claims-enabled", "dry-run", "version"}
+	if len(names) != len(want) {
+		t.Fatalf("flag set = %v, want exactly %v", names, want)
 	}
-	if names[0] != "admin-listen" || names[1] != "version" {
-		t.Fatalf("flag set = %v, want exactly [admin-listen version]", names)
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("flag set = %v, want exactly %v", names, want)
+		}
 	}
 }
 
 func TestParseFlagsRejectsClaimEnablement(t *testing.T) {
+	// --claims-enabled is now the accepted gate; the plane URL and the
+	// deployment mode stay unknown flags and fail closed at parse time.
 	for _, args := range [][]string{
-		{"--claims-enabled=true"},
 		{"--claim-plane-url=http://eshu-workflow-claim-plane:8080"},
 		{"--deployment-mode=active"},
 	} {
@@ -109,7 +117,7 @@ func TestDarkServerEndpoints(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, ln, "test-version", time.Unix(1_700_000_000, 0))
+		done <- serve(ctx, ln, "test-version", time.Unix(1_700_000_000, 0), false)
 	}()
 	base := fmt.Sprintf("http://%s", ln.Addr().String())
 
@@ -174,7 +182,7 @@ func TestServeOnClosedListenerFails(t *testing.T) {
 	if err := ln.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if err := serve(context.Background(), ln, version, time.Now()); err == nil {
+	if err := serve(context.Background(), ln, version, time.Now(), false); err == nil {
 		t.Fatal("serve(closed listener) = nil, want an error")
 	}
 }

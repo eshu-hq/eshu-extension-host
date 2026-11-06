@@ -2,13 +2,18 @@
 
 ## What this scaffold is
 
-Dark deploy surface for the extracted extension host: a health-only host
-binary, a digest-pinned Dockerfile, and a tag-gated publish pipeline with
-SLSA provenance. Zero claim flow by construction — no enablement path
-exists in the binary. Refs #8877 (no closing keyword; the cutover stays
-staged behind #9376 -> #9381). The dark Deployment/Service overlay is NOT
-in this repo: it lands via the deploy PR (boatsgroup#532), staged behind
-the first tag release, and pins the published digest there.
+Dark-by-default deploy surface for the extracted extension host: a
+host binary that serves health only unless the cutover gate opens
+(`--claims-enabled` or `ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1`,
+eshu-hq/eshu#8877 host wireup), a digest-pinned Dockerfile, and a
+tag-gated publish pipeline with SLSA provenance. Zero claim flow by
+default: dark mode still opens no store, dials no plane, and claims no
+work; the enabled flow (worker loop, claim-plane client, collector
+runner, `--dry-run` shadow sink) runs only behind the gate. Refs #8877
+(no closing keyword; the cutover stays staged behind #9376 -> #9381).
+The dark Deployment/Service overlay is NOT in this repo: it lands via
+the deploy PR (boatsgroup#532), staged behind the first tag release, and
+pins the published digest there.
 
 ## Source pin (in-tree truth this scaffold stages)
 
@@ -57,6 +62,12 @@ flag, or eshu go.mod pin bump without table update.
 Byte-compared 2026-11-05 against eshu `drive/8877-leaf-6-matrix`
 `3660eb1e` (`EXTRACTION_PREP.md` §5, eshu PR #10202); re-compare on any
 edit to either copy.
+Trigger note 2026-11-06 (host wireup, eshu-hq/eshu#8877): the
+claim-flow-flag clause has fired — `--claims-enabled`/`--dry-run` now
+exist — while the matrix itself still holds: no second release tag, no
+protocol major change, and `go.mod` still carries only the
+`go 1.26.10` directive (no external dependencies, per the unchanged
+module-import allowlist invariant below).
 
 ## Destination stub state at scaffold time
 

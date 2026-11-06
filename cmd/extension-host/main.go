@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eshu-hq
 
-// Command extension-host is the dark-mode extension host binary
-// (eshu-hq/eshu#8877 Leaf 2): it serves operator health only and carries
-// no enablement path. It never opens Postgres, never dials a claim plane,
-// and never claims work. Any claim-flow flag is a startup error. The
-// enabled flow arrives in a later leaf behind #9376 -> #9381; this binary
-// refuses it by construction because the code path does not exist.
+// Command extension-host is the extension host binary (eshu-hq/eshu#8877):
+// dark by default, serving operator health only, with the enabled claim
+// flow behind the cutover gate (--claims-enabled or
+// ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1). Dark mode never opens Postgres,
+// never dials a claim plane, and never claims work; enabled mode polls the
+// plane and runs one collector call per held claim until SIGTERM/SIGINT.
+// --dry-run shadows the enabled flow: claims, leases, and heartbeats run
+// for real while the commit step only logs the result shape.
 package main
 
 import (
@@ -32,26 +34,34 @@ var version = "dev"
 const defaultAdminListen = ":8082"
 
 type serverConfig struct {
-	adminListen string
-	showVersion bool
+	adminListen   string
+	showVersion   bool
+	claimsEnabled bool
+	dryRun        bool
 }
 
 // flagValues is the single constructor output for the binary's flag
-// surface. The dark posture is enforced by enumeration: exactly these
-// flags exist, so any claim-flow knob fails closed at parse time.
+// surface. The surface is enforced by enumeration: exactly these flags
+// exist, so any other claim-flow knob fails closed at parse time. The
+// plane URL, lease timings, producer identity, and collector path stay
+// environment-only by design and never appear here.
 type flagValues struct {
-	set         *flag.FlagSet
-	adminListen *string
-	showVersion *bool
+	set           *flag.FlagSet
+	adminListen   *string
+	showVersion   *bool
+	claimsEnabled *bool
+	dryRun        *bool
 }
 
 func newFlagSet() *flagValues {
 	fs := flag.NewFlagSet("extension-host", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fv := &flagValues{
-		set:         fs,
-		adminListen: fs.String("admin-listen", defaultAdminListen, "admin listen address (health, readiness, metrics)"),
-		showVersion: fs.Bool("version", false, "print the stamped build version and exit"),
+		set:           fs,
+		adminListen:   fs.String("admin-listen", defaultAdminListen, "admin listen address (health, readiness, metrics)"),
+		showVersion:   fs.Bool("version", false, "print the stamped build version and exit"),
+		claimsEnabled: fs.Bool("claims-enabled", false, "run the cutover worker loop (or ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1)"),
+		dryRun:        fs.Bool("dry-run", false, "with claims enabled, shadow commits: log result shape, never Complete"),
 	}
 	return fv
 }
@@ -68,14 +78,45 @@ func parseFlags(args []string) (serverConfig, error) {
 	if err := fv.set.Parse(args); err != nil {
 		return serverConfig{}, fmt.Errorf("flag parse: %w", err)
 	}
-	return serverConfig{adminListen: *fv.adminListen, showVersion: *fv.showVersion}, nil
+	cfg := serverConfig{adminListen: *fv.adminListen, showVersion: *fv.showVersion, dryRun: *fv.dryRun}
+	if cfg.showVersion {
+		return cfg, nil
+	}
+	envOn, err := cutoverEnabledByEnv(os.Getenv)
+	if err != nil {
+		return serverConfig{}, err
+	}
+	cfg.claimsEnabled = *fv.claimsEnabled || envOn
+	if cfg.dryRun && !cfg.claimsEnabled {
+		return serverConfig{}, fmt.Errorf("dry-run requires claims-enabled (--claims-enabled or %s=1)", envCutoverEnabled)
+	}
+	return cfg, nil
 }
 
-// newMux wires the only three routes the dark binary serves. There is no
-// claim, admission, or mutation surface: unknown paths are 404.
-func newMux(buildVersion string, startedAt time.Time) *http.ServeMux {
+// modeName and claimsBit render the cutover gate on the operator surface:
+// dark by default, enabled behind the gate.
+func modeName(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "dark"
+}
+
+func claimsBit(enabled bool) int {
+	if enabled {
+		return 1
+	}
+	return 0
+}
+
+// newMux wires the only three routes the binary serves. There is no
+// claim, admission, or mutation surface: unknown paths are 404. The
+// health and metrics shapes expose the cutover gate so an operator can
+// tell dark from enabled without reading flags.
+func newMux(buildVersion string, startedAt time.Time, enabled bool) *http.ServeMux {
 	mux := http.NewServeMux()
-	status := fmt.Sprintf(`{"status":"ok","mode":"dark","version":%q}`+"\n", buildVersion)
+	status := fmt.Sprintf(`{"status":"ok","mode":%q,"claims_enabled":%d,"version":%q}`+"\n",
+		modeName(enabled), claimsBit(enabled), buildVersion)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, status)
@@ -95,7 +136,7 @@ func newMux(buildVersion string, startedAt time.Time) *http.ServeMux {
 		_, _ = fmt.Fprintf(w, "extension_host_build_info{version=%q} 1\n", buildVersion)
 		_, _ = fmt.Fprintf(w, "# HELP extension_host_claims_enabled Whether the claim flow is enabled.\n")
 		_, _ = fmt.Fprintf(w, "# TYPE extension_host_claims_enabled gauge\n")
-		_, _ = fmt.Fprintf(w, "extension_host_claims_enabled 0\n")
+		_, _ = fmt.Fprintf(w, "extension_host_claims_enabled %d\n", claimsBit(enabled))
 		_, _ = fmt.Fprintf(w, "# HELP extension_host_uptime_seconds Seconds since process start.\n")
 		_, _ = fmt.Fprintf(w, "# TYPE extension_host_uptime_seconds counter\n")
 		_, _ = fmt.Fprintf(w, "extension_host_uptime_seconds %d\n", uptime)
@@ -106,8 +147,8 @@ func newMux(buildVersion string, startedAt time.Time) *http.ServeMux {
 // serve runs the admin listener until ctx is done, then shuts down
 // gracefully. The listener is passed in so a bad address fails before any
 // goroutine starts.
-func serve(ctx context.Context, ln net.Listener, buildVersion string, startedAt time.Time) error {
-	srv := &http.Server{Handler: newMux(buildVersion, startedAt), ReadHeaderTimeout: 5 * time.Second}
+func serve(ctx context.Context, ln net.Listener, buildVersion string, startedAt time.Time, enabled bool) error {
+	srv := &http.Server{Handler: newMux(buildVersion, startedAt, enabled), ReadHeaderTimeout: 5 * time.Second}
 	done := make(chan error, 1)
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -146,6 +187,9 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 		return 0
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	if cfg.claimsEnabled {
+		return runEnabled(ctx, cfg, logger, stderr)
+	}
 	ln, err := net.Listen("tcp", cfg.adminListen)
 	if err != nil {
 		logger.Error("admin listen failed, failing closed",
@@ -156,7 +200,7 @@ func runWithContext(ctx context.Context, args []string, stdout, stderr io.Writer
 		"event_name", "runtime.startup.ready",
 		"mode", "dark", "claims_enabled", false,
 		"addr", ln.Addr().String(), "version", version)
-	if err := serve(ctx, ln, version, time.Now()); err != nil {
+	if err := serve(ctx, ln, version, time.Now(), false); err != nil {
 		logger.Error("admin server failed", "event_name", "runtime.serve.failed", "error", err)
 		return 1
 	}
