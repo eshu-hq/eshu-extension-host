@@ -28,8 +28,8 @@ the first tag release, and pins the published digest there.
   factschema pin is historical (eshu has since moved to `v0.1.0-rc.17`
   per eshu#10043); it is recorded here as scaffold-time truth only. The
   dark binary couples to no pin: this module's `go.mod` carries only the
-  `go 1.26.10` directive (stdlib-only, asserted by
-  `TestModuleImportsAreStdlibOnly` and the `go list -m all` lint gate).
+  `go 1.26.10` directive (no external dependencies, asserted by
+  the module-import allowlist test and the `go list -m all` lint gate).
 - The dark binary vendors none of the above: it is new stdlib-only code,
   so there is no fork to drift. The claim-path wiring (Leaf 6) moves the
   sources; the in-tree removal (Leaf 9) deletes them last.
@@ -80,10 +80,12 @@ automatically if #9381 wiring ever adds a satellite-owned store.
   reproduces the §1/§5 inventory above.
 - `go test ./... -race` plus `TestImportBoundaryRejectsClaimPlaneImports`
   rejects the six listed claim-plane-capable import prefixes, and
-  `TestModuleImportsAreStdlibOnly` asserts the whole-module invariant this
-  sentence stakes: zero non-stdlib imports, so no claim-plane-capable
-  dependency can enter under an unlisted path. The lint lane additionally
-  asserts `go list -m all` reports only this module.
+  `TestModuleImportsAreAllowlisted` asserts the whole-module invariant this
+  sentence stakes: zero non-stdlib external imports, so no claim-plane-capable
+  dependency can enter under an unlisted path; intra-module imports are
+  allowed only under the own-module carve-out guarded by
+  TestOwnModuleAllowlistIsNarrow and the unchanged ban list. The lint lane
+  additionally asserts `go list -m all` reports only this module.
 - Image provenance: first tag release records `subject-digest` plus SLSA
   and SBOM attestations in GHCR; the deploy overlay (boatsgroup#532)
   pins that digest.

@@ -90,6 +90,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if leaseTTL/3 <= 0 {
+		return Config{}, fmt.Errorf("%s must derive a positive heartbeat interval (leaseTTL/3 > 0)", envLeaseTTL)
+	}
 	return Config{
 		ProducerID:        producerID,
 		ProducerVersion:   producerVersion,

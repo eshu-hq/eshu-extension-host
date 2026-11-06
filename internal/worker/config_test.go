@@ -88,6 +88,7 @@ func TestConfigFromEnvRejectsBadDurations(t *testing.T) {
 		{"poll negative", "ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "-1s"},
 		{"lease garbage", "ESHU_COMPONENT_COLLECTOR_CLAIM_LEASE_TTL", "soon"},
 		{"lease zero", "ESHU_COMPONENT_COLLECTOR_CLAIM_LEASE_TTL", "0s"},
+		{"lease heartbeat rounds to zero", "ESHU_COMPONENT_COLLECTOR_CLAIM_LEASE_TTL", "1ns"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			values := requiredEnv()

@@ -176,12 +176,12 @@ func TestOwnModuleAllowlistIsNarrow(t *testing.T) {
 	}
 }
 
-func TestModuleImportsAreStdlibOnly(t *testing.T) {
-	// Whole-module invariant behind the PROVENANCE.md stdlib-only claim:
-	// the module carries zero imports outside the standard library and
-	// itself, so no claim-plane-capable dependency can enter under an
-	// unlisted path. The worker-loop lane (eshu-hq/eshu#8877 Lane C)
-	// opened the own-module carve-out (see isAllowedModuleImport and
+func TestModuleImportsAreAllowlisted(t *testing.T) {
+	// Whole-module invariant behind the PROVENANCE.md no-external-
+	// dependencies claim: every import is stdlib or own-module, so no
+	// claim-plane-capable dependency can enter under an unlisted path.
+	// The worker-loop lane (eshu-hq/eshu#8877 Lane C) opened the
+	// own-module carve-out (see isAllowedModuleImport and
 	// TestOwnModuleAllowlistIsNarrow); the ban list above is unchanged.
 	// (An unlisted path added to go.mod breaks `go mod tidy -diff` and
 	// the lint-lane `go list -m` check first; this test is the second
