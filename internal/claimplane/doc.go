@@ -8,8 +8,13 @@
 // imported: this module stays dependency-free by design, enforced by
 // TestModuleImportsAreStdlibOnly).
 //
-// Wire mapping (minimal JSON reduced from the workflow.v1 shapes; every
-// route is POST with a JSON body):
+// Wire mapping (spec-pinned routes, headers, envelope, ack, and code
+// vocabulary; seam-minimal bodies for the cutovercontract surface —
+// spec_golden_test.go pins the literals and names the body-shape gap):
+//
+//	every request carries Content-Type: application/json and
+//	Workflow-Protocol-Version: 1 (the server rejects other majors
+//	before any store call); every route is POST with a JSON body.
 //
 //	ClaimNext          POST /workflow.v1/ClaimNext
 //	                   request  {producer_id, producer_version, scopes, observed_at}
@@ -32,10 +37,10 @@
 // GrantSource interface evaluated on every call (ClaimNext and every
 // lifecycle mutation), with reason strings mirroring the component grant
 // vocabulary (granted, revoked, expired, no_matching_grant,
-// grants_unreadable). A deny returns a *DenyError wrapping ErrGrantDenied
-// before any byte touches the wire. Scope enforcement beyond the producer
-// identity stays server-side in this reduction: the request carries the
-// scopes string and the plane refuses out-of-scope claims.
+// scope_mismatch, grants_unreadable). A deny returns a *DenyError
+// wrapping ErrGrantDenied before any byte touches the wire. A per-call
+// scope outside the declared set fails closed locally with
+// scope_mismatch; the plane still refuses out-of-scope claims.
 //
 // Clock mapping: Config.Clock supplies now for the observed_at stamp; the
 // StaticGrants source carries its own Now so tests freeze both with one

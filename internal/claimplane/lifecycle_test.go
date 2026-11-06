@@ -164,15 +164,22 @@ func TestConcurrentUse(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
+	errs := make(chan error, 16)
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"})
+			errs <- c.Heartbeat(context.Background(), Lease{ClaimID: "c", LeaseID: "l"})
 		}()
 	}
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Heartbeat = %v, want nil on every goroutine", err)
+		}
+	}
 	if n := stub.hitCount(); n != 16 {
 		t.Fatalf("concurrent hits = %d, want 16", stub.hits)
 	}

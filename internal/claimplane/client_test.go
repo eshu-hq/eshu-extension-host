@@ -23,6 +23,8 @@ type stubPlane struct {
 	mu       sync.Mutex
 	hits     int
 	paths    []string
+	methods  []string
+	headers  []http.Header
 	bodies   map[string]stubResponse
 	observed []string
 }
@@ -37,6 +39,8 @@ func (s *stubPlane) handler() http.HandlerFunc {
 		s.mu.Lock()
 		s.hits++
 		s.paths = append(s.paths, r.URL.Path)
+		s.methods = append(s.methods, r.Method)
+		s.headers = append(s.headers, r.Header.Clone())
 		resp, ok := s.bodies[r.URL.Path]
 		s.mu.Unlock()
 		if r.Method != http.MethodPost {
@@ -134,7 +138,7 @@ func TestNewClientNilClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient nil clock: %v", err)
 	}
-	if _, _, err := c.ClaimNext(context.Background(), "test-producer", "s"); err != nil {
+	if _, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances"); err != nil {
 		t.Fatalf("ClaimNext nil clock = %v, want lease", err)
 	}
 }
@@ -247,7 +251,7 @@ func TestClaimNextIssuedFalseIsPaced(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, found, err := c.ClaimNext(context.Background(), "test-producer", "s")
+	_, found, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var call *CallError
 	if !errors.As(err, &call) || !call.Paced() || found {
 		t.Fatalf("ClaimNext issued=false = %v,%v, want paced", found, err)
@@ -265,10 +269,13 @@ func TestClaimNext429IsPaced(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var call *CallError
 	if !errors.As(err, &call) || !call.Paced() || call.RetryAfter != 3*time.Second {
 		t.Fatalf("ClaimNext 429 = %v, want paced with 3s", err)
+	}
+	if call.Message != "slow" {
+		t.Fatalf("ClaimNext 429 message = %q, want the server message to survive the bound", call.Message)
 	}
 }
 
@@ -280,7 +287,7 @@ func TestClaimNextIssuedWithoutIDs(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeInvalid {
 		t.Fatalf("ClaimNext id-less issue = %v, want invalid", err)
@@ -294,7 +301,7 @@ func TestClaimNextDecodeErrors(t *testing.T) {
 		}}
 		srv := httptest.NewServer(stub.handler())
 		c := newTestClient(t, srv.URL)
-		_, _, err := c.ClaimNext(context.Background(), "test-producer", "s")
+		_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 		var call *CallError
 		if !errors.As(err, &call) || call.Code != CodeInvalid {
 			t.Errorf("ClaimNext body %q = %v, want invalid", body, err)
@@ -309,7 +316,7 @@ func TestTransportError(t *testing.T) {
 	srv.Close()
 
 	c := newTestClient(t, url)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeTransport {
 		t.Fatalf("ClaimNext closed server = %v, want transport", err)
@@ -324,7 +331,7 @@ func TestUnexpectedStatus(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeUnexpectedStatus {
 		t.Fatalf("ClaimNext 599 = %v, want %q", err, CodeUnexpectedStatus)
@@ -339,7 +346,7 @@ func TestBoundMessageTruncates(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err := c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var call *CallError
 	if !errors.As(err, &call) {
 		t.Fatalf("ClaimNext 500 = %v, want CallError", err)

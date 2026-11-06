@@ -154,13 +154,34 @@ func TestNoMatchingGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var deny *DenyError
 	if !errors.As(err, &deny) || deny.Reason != ReasonNoMatchingGrant {
 		t.Fatalf("ClaimNext unmatched = %v, want %q", err, ReasonNoMatchingGrant)
 	}
 	if n := stub.hitCount(); n != 0 {
 		t.Fatalf("unmatched grant touched the wire %d times, want 0", n)
+	}
+}
+
+func TestClaimNextUndeclaredScopeDeniedWithoutWire(t *testing.T) {
+	stub := &stubPlane{bodies: map[string]stubResponse{
+		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,"claim_id":"c","lease_id":"l"}`},
+	}}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, _, err := c.ClaimNext(context.Background(), "test-producer", "s3:NotDeclared")
+	var deny *DenyError
+	if !errors.As(err, &deny) || deny.Reason != ReasonScopeMismatch {
+		t.Fatalf("ClaimNext undeclared scope = %v, want reason %q", deny, ReasonScopeMismatch)
+	}
+	if !errors.Is(err, ErrGrantDenied) {
+		t.Fatalf("ClaimNext undeclared scope = %v, want wrapped ErrGrantDenied", err)
+	}
+	if n := stub.hitCount(); n != 0 {
+		t.Fatalf("undeclared scope touched the wire %d times, want 0", n)
 	}
 }
 
@@ -175,7 +196,7 @@ func TestEmptyReasonDegradesToUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	_, _, err = c.ClaimNext(context.Background(), "test-producer", "s")
+	_, _, err = c.ClaimNext(context.Background(), "test-producer", "ec2:DescribeInstances")
 	var deny *DenyError
 	if !errors.As(err, &deny) || deny.Reason != ReasonGrantsUnreadable {
 		t.Fatalf("ClaimNext empty reason = %v, want %q", err, ReasonGrantsUnreadable)

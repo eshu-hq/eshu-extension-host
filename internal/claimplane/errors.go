@@ -22,6 +22,7 @@ const (
 	ReasonRevoked          = "revoked"
 	ReasonExpired          = "expired"
 	ReasonNoMatchingGrant  = "no_matching_grant"
+	ReasonScopeMismatch    = "scope_mismatch"
 	ReasonGrantsUnreadable = "grants_unreadable"
 )
 

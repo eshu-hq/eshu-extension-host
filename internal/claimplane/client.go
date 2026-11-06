@@ -33,6 +33,15 @@ const (
 	pathFailClaimTerminal  = "/workflow.v1/FailClaimTerminal"
 )
 
+// protocolVersionHeader carries the caller protocol major on every
+// request. The v0.1.0 server enforces it before any store call: a
+// missing or unknown major fails the call with version_mismatch, so a
+// client that omits it fails every call against the real plane.
+const (
+	protocolVersionHeader = "Workflow-Protocol-Version"
+	protocolVersion       = "1"
+)
+
 // GrantSource re-reads the live producer-grant set. The client calls it on
 // every call, so a grant revoked during execution fails the next result
 // closed without rebuilding the client. Implementations must be safe for
@@ -105,8 +114,9 @@ type Config struct {
 	// grant decision evaluates under exactly this identity.
 	ProducerID      string
 	ProducerVersion string
-	// Scopes are the declared collector kinds. The request carries them;
-	// out-of-scope refusal stays server-side in this reduction.
+	// Scopes are the declared collector kinds. A per-call scope outside
+	// this set fails closed locally with scope_mismatch before any byte
+	// touches the wire; the plane still refuses out-of-scope claims.
 	Scopes []string
 	// Grants re-reads the live producer-grant set on every call.
 	Grants GrantSource
@@ -134,6 +144,7 @@ type Client struct {
 	http    *http.Client
 	prodID  string
 	version string
+	scopes  []string
 	clock   func() time.Time
 	grants  GrantSource
 	max     int64
@@ -175,6 +186,7 @@ func NewClient(cfg Config) (*Client, error) {
 		http:    &http.Client{Timeout: 30 * time.Second},
 		prodID:  strings.TrimSpace(cfg.ProducerID),
 		version: strings.TrimSpace(cfg.ProducerVersion),
+		scopes:  append([]string(nil), cfg.Scopes...),
 		clock:   clock,
 		grants:  cfg.Grants,
 		max:     max,
@@ -238,6 +250,9 @@ func (c *Client) ClaimNext(ctx context.Context, producerID, scopes string) (Leas
 	if strings.TrimSpace(scopes) == "" {
 		return Lease{}, false, errors.New("claimplane ClaimNext: scopes are required")
 	}
+	if !scopeDeclared(c.scopes, scopes) {
+		return Lease{}, false, &DenyError{Reason: ReasonScopeMismatch, ProducerID: c.prodID}
+	}
 	if err := c.checkGrant(ctx); err != nil {
 		return Lease{}, false, err
 	}
@@ -256,7 +271,12 @@ func (c *Client) ClaimNext(ctx context.Context, producerID, scopes string) (Leas
 		return Lease{}, false, nil
 	case status == http.StatusTooManyRequests || envelope.Code == CodePaced:
 		retry := time.Duration(envelope.RetryAfterSeconds) * time.Second
-		return Lease{}, false, &CallError{Op: "ClaimNext", Code: CodePaced, RetryAfter: retry}
+		return Lease{}, false, &CallError{
+			Op:         "ClaimNext",
+			Code:       CodePaced,
+			Message:    boundMessage(envelope.Message),
+			RetryAfter: retry,
+		}
 	case status < 200 || status > 299:
 		return Lease{}, false, c.callError("ClaimNext", status, envelope)
 	}
@@ -336,6 +356,21 @@ func (c *Client) mutate(ctx context.Context, op, path string, lease Lease, resul
 	return nil
 }
 
+// scopeDeclared reports whether scope is one of the declared collector
+// kinds. Empty scopes never match, mirroring the in-tree grant decision:
+// a call whose scope is not declared never authorizes.
+func scopeDeclared(scopes []string, scope string) bool {
+	if strings.TrimSpace(scope) == "" {
+		return false
+	}
+	for _, declared := range scopes {
+		if scope == declared {
+			return true
+		}
+	}
+	return false
+}
+
 // checkGrant re-reads the live grant set for the configured holder. A deny
 // fails closed before any wire contact.
 func (c *Client) checkGrant(ctx context.Context) error {
@@ -366,6 +401,7 @@ func (c *Client) roundTrip(
 		return 0, errorEnvelope{}, nil, c.callErrorText(op, CodeInvalid, err.Error())
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set(protocolVersionHeader, protocolVersion)
 	httpResp, err := c.http.Do(httpReq)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
