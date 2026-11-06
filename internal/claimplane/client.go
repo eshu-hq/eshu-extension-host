@@ -53,10 +53,12 @@ type GrantSource interface {
 	Granted(producerID string) (ok bool, reason string)
 }
 
-// Config builds a Client. BaseURL, ProducerID, ProducerVersion, Scopes, and
-// Grants are required; everything else has a safe default. The producer
-// identity is fixed here at construction and never taken from the wire, so
-// a tampered response cannot reassign which holder this client proves.
+// Config builds a Client. BaseURL, ProducerID, ProducerVersion,
+// CollectorInstanceID, Scopes, and Grants are required; everything else
+// has a safe default. The producer identity and the collector instance id
+// are fixed here at construction and never taken from the wire, so a
+// tampered response cannot reassign which holder this client proves or
+// which instance it claims for.
 type Config struct {
 	// BaseURL is the claim-plane origin, for example
 	// "https://workflow.internal". Only http and https are accepted.
@@ -65,6 +67,10 @@ type Config struct {
 	// grant decision evaluates under exactly this identity.
 	ProducerID      string
 	ProducerVersion string
+	// CollectorInstanceID is the plane's (kind, instance) match key this
+	// client claims for. It is a dedicated knob, never derived from the
+	// producer id.
+	CollectorInstanceID string
 	// Scopes are the declared collector kinds. A per-call scope outside
 	// this set fails closed locally with scope_mismatch before any byte
 	// touches the wire; the plane still refuses out-of-scope claims.
@@ -85,14 +91,15 @@ type Config struct {
 // cutovercontract.ClaimPlane exactly: the seam unification is a compile
 // check, not a structural echo.
 type Client struct {
-	baseURL string
-	http    *http.Client
-	prodID  string
-	version string
-	scopes  []string
-	clock   func() time.Time
-	grants  GrantSource
-	max     int64
+	baseURL    string
+	http       *http.Client
+	prodID     string
+	version    string
+	instanceID string
+	scopes     []string
+	clock      func() time.Time
+	grants     GrantSource
+	max        int64
 }
 
 // compile check: the client is the ClaimPlane seam implementation.
@@ -115,6 +122,9 @@ func NewClient(cfg Config) (*Client, error) {
 	if strings.TrimSpace(cfg.ProducerVersion) == "" {
 		return nil, errors.New("claimplane: producer version is required")
 	}
+	if strings.TrimSpace(cfg.CollectorInstanceID) == "" {
+		return nil, errors.New("claimplane: collector instance id is required")
+	}
 	if len(cfg.Scopes) == 0 {
 		return nil, errors.New("claimplane: at least one declared scope is required")
 	}
@@ -130,14 +140,15 @@ func NewClient(cfg Config) (*Client, error) {
 		max = DefaultMaxResponseBytes
 	}
 	return &Client{
-		baseURL: base,
-		http:    &http.Client{Timeout: 30 * time.Second},
-		prodID:  strings.TrimSpace(cfg.ProducerID),
-		version: strings.TrimSpace(cfg.ProducerVersion),
-		scopes:  append([]string(nil), cfg.Scopes...),
-		clock:   clock,
-		grants:  cfg.Grants,
-		max:     max,
+		baseURL:    base,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		prodID:     strings.TrimSpace(cfg.ProducerID),
+		version:    strings.TrimSpace(cfg.ProducerVersion),
+		instanceID: strings.TrimSpace(cfg.CollectorInstanceID),
+		scopes:     append([]string(nil), cfg.Scopes...),
+		clock:      clock,
+		grants:     cfg.Grants,
+		max:        max,
 	}, nil
 }
 
@@ -196,11 +207,11 @@ type errorEnvelope struct {
 
 // ClaimNext asks the plane for the next eligible work item. It returns
 // found=false with a nil error on the empty-queue signal (404 not_found).
-// The request is the spec ClaimNextRequest: producer identity and scopes
-// arrive folded into req.Selector (there is no top-level producer slot in
-// the spec), so the selector is validated against the configured holder
-// before any byte touches the wire. A zero ObservedAt is stamped from the
-// client clock. The answer decodes the spec ClaimNextResponse read-subset:
+// The request is the spec ClaimNextRequest: producer identity, the
+// collector instance id, and scopes arrive folded into req.Selector
+// (there is no top-level producer slot in the spec), so the selector is
+// validated against the configured holder and instance before any byte
+// touches the wire. A zero ObservedAt is stamped from the client clock. The answer decodes the spec ClaimNextResponse read-subset:
 // issued maps the granted claim and work item ids into a Lease while an
 // unissued answer carries the pacing deferral.
 func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest) (cutovercontract.Lease, bool, error) {
@@ -211,10 +222,10 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 	if strings.TrimSpace(string(sel.CollectorKind)) == "" {
 		return cutovercontract.Lease{}, false, errors.New("claimplane ClaimNext: collector kind is required")
 	}
-	if sel.CollectorInstanceID != c.prodID || sel.OwnerID != c.prodID {
+	if sel.CollectorInstanceID != c.instanceID || sel.OwnerID != c.prodID {
 		return cutovercontract.Lease{}, false, fmt.Errorf(
-			"claimplane ClaimNext: selector identity %q/%q differs from configured holder %q",
-			sel.CollectorInstanceID, sel.OwnerID, c.prodID,
+			"claimplane ClaimNext: selector identity %q/%q differs from configured instance %q and holder %q",
+			sel.CollectorInstanceID, sel.OwnerID, c.instanceID, c.prodID,
 		)
 	}
 	if strings.TrimSpace(sel.ClaimID) == "" {

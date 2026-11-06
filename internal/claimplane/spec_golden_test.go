@@ -229,8 +229,8 @@ func TestSpecGoldenClaimNextRequestBody(t *testing.T) {
 	if string(sel["collector_kind"]) != `"ec2:DescribeInstances"` {
 		t.Errorf("collector_kind = %s, want the configured scope kind", sel["collector_kind"])
 	}
-	if string(sel["collector_instance_id"]) != `"test-producer"` || string(sel["owner_id"]) != `"test-producer"` {
-		t.Errorf("selector identity = %s/%s, want the configured holder on both",
+	if string(sel["collector_instance_id"]) != `"test-instance"` || string(sel["owner_id"]) != `"test-producer"` {
+		t.Errorf("selector identity = %s/%s, want the configured instance and holder",
 			sel["collector_instance_id"], sel["owner_id"])
 	}
 	var ttlNs int64

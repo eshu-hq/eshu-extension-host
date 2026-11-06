@@ -81,12 +81,13 @@ func (s *stubPlane) hitCount() int {
 
 func testConfig(url string) Config {
 	return Config{
-		BaseURL:         url,
-		ProducerID:      "test-producer",
-		ProducerVersion: "1.0.0",
-		Scopes:          []string{"ec2:DescribeInstances"},
-		Grants:          &StaticGrants{Grants: []Grant{{ProducerID: "test-producer"}}},
-		Clock:           func() time.Time { return time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC) },
+		BaseURL:             url,
+		ProducerID:          "test-producer",
+		ProducerVersion:     "1.0.0",
+		CollectorInstanceID: "test-instance",
+		Scopes:              []string{"ec2:DescribeInstances"},
+		Grants:              &StaticGrants{Grants: []Grant{{ProducerID: "test-producer"}}},
+		Clock:               func() time.Time { return time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC) },
 	}
 }
 
@@ -100,13 +101,14 @@ func newTestClient(t *testing.T, url string) *Client {
 }
 
 // testClaimRequest builds the spec-shaped request the worker sends: the
-// producer identity and scopes folded into the selector, ObservedAt left
-// zero for the client clock to stamp.
+// producer identity, the dedicated collector instance id, and scopes
+// folded into the selector, ObservedAt left zero for the client clock to
+// stamp.
 func testClaimRequest() cutovercontract.ClaimRequest {
 	return cutovercontract.ClaimRequest{
 		Selector: cutovercontract.ClaimSelector{
 			CollectorKind:       "ec2:DescribeInstances",
-			CollectorInstanceID: "test-producer",
+			CollectorInstanceID: "test-instance",
 			OwnerID:             "test-producer",
 			ClaimID:             "claim-1",
 		},
@@ -137,6 +139,7 @@ func TestNewClientRejectsEmptyIdentity(t *testing.T) {
 	cases := map[string]func(*Config){
 		"empty producer": func(c *Config) { c.ProducerID = "  " },
 		"empty version":  func(c *Config) { c.ProducerVersion = "" },
+		"empty instance": func(c *Config) { c.CollectorInstanceID = "" },
 		"empty scopes":   func(c *Config) { c.Scopes = nil },
 		"nil grants":     func(c *Config) { c.Grants = nil },
 	}

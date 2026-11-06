@@ -34,16 +34,18 @@ type contractEnvelope struct {
 
 // Loop polls the plane and serves one claim at a time until ctx is done,
 // then returns nil: cancellation is a clean stop, never an error. A
-// nil runner or plane, an empty producer identity or version, empty
-// scopes, or a non-positive poll or heartbeat interval fails closed at
-// entry. Every poll builds the spec-shaped ClaimRequest from Config —
-// the scope kind selects the collector kind, the producer id pins the
-// holder slots, the lease TTL rides as the requested hold, and the claim
-// id is a fresh nonce per poll — and the client stamps ObservedAt. Every
-// other failure is absorbed with backoff: an empty queue or a failed
-// ClaimNext sleeps the poll interval and re-polls, so a flapping plane
-// or a revoked grant cannot spin the loop or stop the worker. A held
-// claim re-polls immediately after its outcome lands.
+// nil runner or plane, an empty producer identity or version, an empty
+// collector instance id, empty scopes, or a non-positive poll or
+// heartbeat interval fails closed at entry. Every poll builds the
+// spec-shaped ClaimRequest from Config — the scope kind selects the
+// collector kind, the dedicated instance knob feeds the plane's (kind,
+// instance) match key, the producer id pins the owner slot, the lease TTL
+// rides as the requested hold, and the claim id is a fresh nonce per
+// poll — and the client stamps ObservedAt. Every other failure is
+// absorbed with backoff: an empty queue or a failed ClaimNext sleeps the
+// poll interval and re-polls, so a flapping plane or a revoked grant
+// cannot spin the loop or stop the worker. A held claim re-polls
+// immediately after its outcome lands.
 //
 // Outcomes partition on the run: success completes the claim; a run
 // error fails the claim retryable and releases the hold; a grant denial
@@ -64,6 +66,9 @@ func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane 
 	}
 	if strings.TrimSpace(cfg.ProducerVersion) == "" {
 		return errors.New("worker: producer version is required")
+	}
+	if strings.TrimSpace(cfg.CollectorInstanceID) == "" {
+		return errors.New("worker: collector instance id is required")
 	}
 	if strings.TrimSpace(cfg.Scopes) == "" {
 		return errors.New("worker: scopes are required")
@@ -99,16 +104,19 @@ func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane 
 }
 
 // claimRequestFor builds the spec-shaped ClaimNext request from the worker
-// wiring: the producer identity and scopes fold into the selector (the
-// spec carries no top-level producer slots), the lease TTL rides as the
-// requested hold, and ObservedAt stays zero for the client clock to
-// stamp. The claim id is a fresh per-call nonce (the in-tree newClaimID
-// precedent), so the plane never sees a replayed selector.
+// wiring: the producer identity, the dedicated instance knob, and scopes
+// fold into the selector (the spec carries no top-level producer slots),
+// the lease TTL rides as the requested hold, and ObservedAt stays zero
+// for the client clock to stamp. The instance knob is never the producer
+// id: the plane matches (kind, instance) by equality, so folding the
+// producer id in strands every producer whose id differs from the
+// instance id. The claim id is a fresh per-call nonce (the in-tree
+// newClaimID precedent), so the plane never sees a replayed selector.
 func claimRequestFor(cfg Config) cutovercontract.ClaimRequest {
 	return cutovercontract.ClaimRequest{
 		Selector: cutovercontract.ClaimSelector{
 			CollectorKind:       cfg.Scopes,
-			CollectorInstanceID: cfg.ProducerID,
+			CollectorInstanceID: cfg.CollectorInstanceID,
 			OwnerID:             cfg.ProducerID,
 			ClaimID:             newClaimID(),
 		},

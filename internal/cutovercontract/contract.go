@@ -67,11 +67,13 @@ type ClaimSelector struct {
 // observed_at, lease_ttl_ns. Duration encodes as the nanosecond number
 // the _ns suffix promises; time encodes RFC3339.
 //
-// Producer identity and scopes are not separate arguments: the spec
-// request carries no top-level producer or version slots, so they fold
-// into Selector (the in-tree client takes a full workflowv1.ClaimSelector
-// the same way). The worker builds it: CollectorKind from scopes,
-// CollectorInstanceID and OwnerID from the producer id, ClaimID as a fresh
+// Producer identity, the collector instance id, and scopes are not
+// separate arguments: the spec request carries no top-level producer or
+// version slots, so they fold into Selector (the in-tree client takes a
+// full workflowv1.ClaimSelector the same way). The worker builds it:
+// CollectorKind from scopes, CollectorInstanceID from the dedicated
+// instance knob (never the producer id — the plane matches (kind,
+// instance) by equality), OwnerID from the producer id, ClaimID as a fresh
 // per-call nonce. ProducerVersion has no spec slot — it is validated
 // non-empty at Loop entry and client construction (the in-tree client
 // stores it without ever serializing it) and is never sent.

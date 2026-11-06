@@ -116,13 +116,14 @@ func (f *fakeRunner) RunCollector(ctx context.Context, contract []byte) ([]byte,
 
 func testConfig() Config {
 	return Config{
-		ProducerID:        "test-producer",
-		ProducerVersion:   "v0.1.0",
-		Scopes:            "component",
-		ClaimPlaneURL:     "https://plane.internal",
-		PollInterval:      time.Millisecond,
-		LeaseTTL:          60 * time.Second,
-		HeartbeatInterval: 5 * time.Millisecond,
+		ProducerID:          "test-producer",
+		ProducerVersion:     "v0.1.0",
+		CollectorInstanceID: "test-instance",
+		Scopes:              "component",
+		ClaimPlaneURL:       "https://plane.internal",
+		PollInterval:        time.Millisecond,
+		LeaseTTL:            60 * time.Second,
+		HeartbeatInterval:   5 * time.Millisecond,
 	}
 }
 
@@ -171,13 +172,37 @@ func TestLoopRejectsNilCollaborators(t *testing.T) {
 	if err := Loop(context.Background(), bad, runner, plane); err == nil {
 		t.Error("empty producer version: got nil error, want fail-closed")
 	}
+	bad = cfg
+	bad.CollectorInstanceID = ""
+	if err := Loop(context.Background(), bad, runner, plane); err == nil {
+		t.Error("empty instance id: got nil error, want fail-closed")
+	}
+}
+
+func TestClaimRequestCarriesDistinctInstanceID(t *testing.T) {
+	// The plane matches (kind, instance) by equality: a producer whose
+	// id differs from the instance id can never claim unless the
+	// selector carries the dedicated instance knob, not the producer id.
+	cfg := testConfig()
+	cfg.ProducerID = "producer-9"
+	cfg.CollectorInstanceID = "instance-7"
+	req := claimRequestFor(cfg)
+	if req.Selector.CollectorInstanceID != "instance-7" {
+		t.Errorf("CollectorInstanceID = %q, want the dedicated instance knob %q",
+			req.Selector.CollectorInstanceID, "instance-7")
+	}
+	if req.Selector.OwnerID != "producer-9" {
+		t.Errorf("OwnerID = %q, want the holder %q", req.Selector.OwnerID, "producer-9")
+	}
 }
 
 func TestLoopClaimRequestFromConfig(t *testing.T) {
 	// The worker builds the spec-shaped request from Config: the scope
-	// kind selects the collector kind, the producer id pins both holder
-	// slots, the lease TTL rides as the requested hold, and every poll
-	// mints a fresh claim id so the plane never sees a replayed selector.
+	// kind selects the collector kind, the dedicated instance knob feeds
+	// the plane's (kind, instance) match key, the producer id pins the
+	// owner slot, the lease TTL rides as the requested hold, and every
+	// poll mints a fresh claim id so the plane never sees a replayed
+	// selector.
 	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
 	plane := &fakePlane{answers: []claimAnswer{
 		{lease: testLease(), found: true},
@@ -203,9 +228,13 @@ func TestLoopClaimRequestFromConfig(t *testing.T) {
 		if string(sel.CollectorKind) != cfg.Scopes {
 			t.Errorf("req %d collector_kind = %q, want scopes %q", i, sel.CollectorKind, cfg.Scopes)
 		}
-		if sel.CollectorInstanceID != cfg.ProducerID || sel.OwnerID != cfg.ProducerID {
-			t.Errorf("req %d identity = %q/%q, want producer %q on both",
-				i, sel.CollectorInstanceID, sel.OwnerID, cfg.ProducerID)
+		if sel.CollectorInstanceID != cfg.CollectorInstanceID {
+			t.Errorf("req %d instance = %q, want dedicated instance %q",
+				i, sel.CollectorInstanceID, cfg.CollectorInstanceID)
+		}
+		if sel.OwnerID != cfg.ProducerID {
+			t.Errorf("req %d owner = %q, want holder %q",
+				i, sel.OwnerID, cfg.ProducerID)
 		}
 		if sel.ClaimID == "" {
 			t.Errorf("req %d claim id is empty, want a fresh nonce per poll", i)

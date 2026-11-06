@@ -5,6 +5,7 @@ package worker
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -17,6 +18,7 @@ func requiredEnv() map[string]string {
 	return map[string]string{
 		"ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID":      "test-producer",
 		"ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION": "v0.1.0",
+		"ESHU_COMPONENT_COLLECTOR_INSTANCE_ID":        "test-instance",
 		"ESHU_WORKFLOW_CLAIM_PLANE_URL":               "https://plane.internal",
 	}
 }
@@ -25,6 +27,7 @@ func TestConfigFromEnvRequiresProducerPin(t *testing.T) {
 	for _, key := range []string{
 		"ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID",
 		"ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION",
+		"ESHU_COMPONENT_COLLECTOR_INSTANCE_ID",
 		"ESHU_WORKFLOW_CLAIM_PLANE_URL",
 	} {
 		values := requiredEnv()
@@ -35,6 +38,21 @@ func TestConfigFromEnvRequiresProducerPin(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnvRequiresInstanceID(t *testing.T) {
+	// The collector instance id is the plane's (kind, instance) match
+	// key: it is never derived from the producer id, so a missing knob
+	// fails closed naming the variable, never the value.
+	values := requiredEnv()
+	delete(values, "ESHU_COMPONENT_COLLECTOR_INSTANCE_ID")
+	_, err := ConfigFromEnv(testEnv(values))
+	if err == nil {
+		t.Fatal("missing ESHU_COMPONENT_COLLECTOR_INSTANCE_ID: got nil error, want fail-closed")
+	}
+	if got := err.Error(); !strings.Contains(got, "ESHU_COMPONENT_COLLECTOR_INSTANCE_ID") {
+		t.Fatalf("error %q does not name the variable", got)
+	}
+}
+
 func TestConfigFromEnvDefaults(t *testing.T) {
 	cfg, err := ConfigFromEnv(testEnv(requiredEnv()))
 	if err != nil {
@@ -42,6 +60,9 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.ProducerID != "test-producer" || cfg.ProducerVersion != "v0.1.0" {
 		t.Errorf("pin = %q/%q, want test-producer/v0.1.0", cfg.ProducerID, cfg.ProducerVersion)
+	}
+	if cfg.CollectorInstanceID != "test-instance" {
+		t.Errorf("CollectorInstanceID = %q, want test-instance (never derived from the producer id)", cfg.CollectorInstanceID)
 	}
 	if cfg.Scopes != "component" {
 		t.Errorf("Scopes = %q, want in-tree default %q", cfg.Scopes, "component")

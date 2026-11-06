@@ -13,11 +13,12 @@ import (
 // Environment knobs mirror the in-tree worker names
 // (eshu go/cmd/collector-component-extension/config.go and
 // cutover.go resolveCutoverPlan) so operators carry one vocabulary across
-// the extraction: the producer pin, the scope kind, the claim-plane URL,
-// and the poll/lease timings.
+// the extraction: the producer pin, the collector instance id, the scope
+// kind, the claim-plane URL, and the poll/lease timings.
 const (
 	envProducerID      = "ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID"
 	envProducerVersion = "ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION"
+	envInstanceID      = "ESHU_COMPONENT_COLLECTOR_INSTANCE_ID"
 	envScopeKind       = "ESHU_COMPONENT_COLLECTOR_SCOPE_KIND"
 	envClaimPlaneURL   = "ESHU_WORKFLOW_CLAIM_PLANE_URL"
 	envPollInterval    = "ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL"
@@ -42,6 +43,12 @@ type Config struct {
 	// grant decision evaluates under. They are never derived silently.
 	ProducerID      string
 	ProducerVersion string
+	// CollectorInstanceID is the plane's (kind, instance) match key
+	// carried on every ClaimNext. It is a dedicated knob, never derived
+	// from the producer id: folding the producer id in here strands any
+	// producer whose id differs from the instance id with an
+	// unclaimable selector.
+	CollectorInstanceID string
 	// Scopes is the declared collector kind carried on each ClaimNext.
 	Scopes string
 	// ClaimPlaneURL is the remote plane origin (http or https).
@@ -71,6 +78,10 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if producerVersion == "" {
 		return Config{}, fmt.Errorf("%s is required: the holder identity is pinned, never derived silently", envProducerVersion)
 	}
+	instanceID := strings.TrimSpace(getenv(envInstanceID))
+	if instanceID == "" {
+		return Config{}, fmt.Errorf("%s is required: the claim match key is pinned, never derived from the producer id", envInstanceID)
+	}
 	scopes := strings.TrimSpace(getenv(envScopeKind))
 	if scopes == "" {
 		scopes = defaultScopeKind
@@ -94,13 +105,14 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("%s must derive a positive heartbeat interval (leaseTTL/3 > 0)", envLeaseTTL)
 	}
 	return Config{
-		ProducerID:        producerID,
-		ProducerVersion:   producerVersion,
-		Scopes:            scopes,
-		ClaimPlaneURL:     planeURL,
-		PollInterval:      pollInterval,
-		LeaseTTL:          leaseTTL,
-		HeartbeatInterval: leaseTTL / 3,
+		ProducerID:          producerID,
+		ProducerVersion:     producerVersion,
+		CollectorInstanceID: instanceID,
+		Scopes:              scopes,
+		ClaimPlaneURL:       planeURL,
+		PollInterval:        pollInterval,
+		LeaseTTL:            leaseTTL,
+		HeartbeatInterval:   leaseTTL / 3,
 	}, nil
 }
 
