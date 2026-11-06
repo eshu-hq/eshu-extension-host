@@ -109,9 +109,10 @@ func strictDecode(raw []byte) ([]byte, error) {
 }
 
 // secretKeyPattern matches key=value and "key": value shapes whose key
-// looks secret-bearing (token, key, or secret, case-insensitive) so the
-// value can be masked before the message leaves the runner.
-var secretKeyPattern = regexp.MustCompile(`(?i)([\w.\-]*?(?:token|key|secret)[\w.\-]*)(["']?\s*[:=]\s*["']?)([^\s"'\,}\]]+)`)
+// looks secret-bearing (token, key, secret, password, or passwd,
+// case-insensitive) so the value can be masked before the message
+// leaves the runner.
+var secretKeyPattern = regexp.MustCompile(`(?i)([\w.\-]*?(?:token|key|secret|password|passwd)[\w.\-]*)(["']?\s*[:=]\s*["']?)([^\s"'\,}\]]+)`)
 
 // redactSecrets masks secret-looking values in an error string. Matching
 // is key-anchored and case-insensitive; anything without a secret-bearing

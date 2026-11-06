@@ -39,6 +39,18 @@ func TestRunCollectorRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRunCollectorDeliversStdin(t *testing.T) {
+	payload := `{"claim":"c1","producer":"dev.eshu.test"}`
+	r := ProcessRunner{Path: "sh", Args: []string{"-c", "cat"}}
+	got, err := r.RunCollector(context.Background(), []byte(payload))
+	if err != nil {
+		t.Fatalf("RunCollector error = %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("RunCollector result = %q, want stdin echo %q", got, payload)
+	}
+}
+
 func TestRunCollectorRejectsTrailingData(t *testing.T) {
 	r := ProcessRunner{Path: "sh", Args: []string{"-c", `printf '{"ok":true} trailing'`}}
 	_, err := r.RunCollector(context.Background(), []byte(`{"claim":"c1"}`))
@@ -59,6 +71,9 @@ func TestRunCollectorTruncatesBoundedStdout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "truncated") {
 		t.Fatalf("RunCollector error = %v, want it to report truncation", err)
+	}
+	if !strings.Contains(err.Error(), errTruncatedText) {
+		t.Fatalf("RunCollector error = %v, want the exact sentinel %q", err, errTruncatedText)
 	}
 }
 
@@ -94,6 +109,8 @@ func TestRedactSecrets(t *testing.T) {
 		{name: "json colon", in: `decode failed for {"api_token": "s3cr3t-value"}`, leak: "s3cr3t-value"},
 		{name: "case insensitive", in: `bad SECRET=topsecret-value here`, leak: "topsecret-value"},
 		{name: "quoted key", in: `"client_secret"='hidden-value'`, leak: "hidden-value"},
+		{name: "password", in: `launch failed password=hunter2-value`, leak: "hunter2-value"},
+		{name: "passwd", in: `launch failed passwd=hunter2-value`, leak: "hunter2-value"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := redactSecrets(tc.in)
