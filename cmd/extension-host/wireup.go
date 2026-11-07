@@ -67,16 +67,19 @@ func newClaimPlaneClient(wcfg worker.Config) (*claimplane.Client, error) {
 		ProducerVersion:     wcfg.ProducerVersion,
 		CollectorInstanceID: wcfg.CollectorInstanceID,
 		Scopes:              []string{wcfg.Scopes},
+		LeaseDuration:       wcfg.LeaseTTL,
 		Grants:              &claimplane.StaticGrants{Grants: []claimplane.Grant{{ProducerID: wcfg.ProducerID}}},
 	})
 }
 
-// Committer is the outcome half of the claim-plane seam: finish a held
-// claim or record its failure. The claim-plane client satisfies it; the
-// dry-run compare sink satisfies it without ever completing. The worker
-// loop keeps taking the full ClaimPlane; commitRoutedPlane binds the
-// chosen committer into that shape.
+// Committer is the outcome half of the claim-plane seam: commit a held
+// claim's result, finish the state-only claim, or record its failure.
+// The claim-plane client satisfies it; the dry-run compare sink
+// satisfies it without ever committing or completing. The worker loop
+// keeps taking the full ClaimPlane; commitRoutedPlane binds the chosen
+// committer into that shape.
 type Committer interface {
+	CommitClaimFacts(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error
 	Complete(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error
 	FailRetryable(ctx context.Context, lease cutovercontract.Lease) error
 	FailTerminal(ctx context.Context, lease cutovercontract.Lease) error
@@ -97,6 +100,10 @@ type commitRoutedPlane struct {
 // The routed plane still speaks the whole seam.
 var _ cutovercontract.ClaimPlane = commitRoutedPlane{}
 
+func (p commitRoutedPlane) CommitClaimFacts(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
+	return p.committer.CommitClaimFacts(ctx, lease, resultJSON)
+}
+
 func (p commitRoutedPlane) Complete(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
 	return p.committer.Complete(ctx, lease, resultJSON)
 }
@@ -111,9 +118,10 @@ func (p commitRoutedPlane) FailTerminal(ctx context.Context, lease cutovercontra
 
 // compareSink is the shadow-mode committer: it observes the collector
 // result, logs its byte count and sha256, and drops it without calling
-// Complete. Failure outcomes still delegate downstream so a failed shadow
-// run releases its hold instead of squatting the lease to expiry. It
-// never completes, by construction: Complete has no downstream call.
+// CommitClaimFacts or Complete. Failure outcomes still delegate
+// downstream so a failed shadow run releases its hold instead of
+// squatting the lease to expiry. It never commits, by construction:
+// neither commit nor complete has a downstream call.
 type compareSink struct {
 	downstream Committer
 	logger     *slog.Logger
@@ -129,14 +137,23 @@ func newCompareSink(downstream Committer, stderr io.Writer) *compareSink {
 	}
 }
 
+func (s *compareSink) CommitClaimFacts(_ context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
+	s.logObserved("dry-run compare: commit observed, commit dropped", lease, resultJSON)
+	return nil
+}
+
 func (s *compareSink) Complete(_ context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
+	s.logObserved("dry-run compare: result observed, complete dropped", lease, resultJSON)
+	return nil
+}
+
+func (s *compareSink) logObserved(msg string, lease cutovercontract.Lease, resultJSON []byte) {
 	sum := sha256.Sum256(resultJSON)
-	s.logger.Info("dry-run compare: result observed, commit dropped",
+	s.logger.Info(msg,
 		"event_name", "runtime.dryrun.compare",
 		"claim_id", lease.ClaimID,
 		"result_bytes", len(resultJSON),
 		"result_sha256", hex.EncodeToString(sum[:]))
-	return nil
 }
 
 func (s *compareSink) FailRetryable(ctx context.Context, lease cutovercontract.Lease) error {

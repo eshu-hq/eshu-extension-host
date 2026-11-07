@@ -24,6 +24,20 @@ import (
 // in-tree 4 MiB default; truncation fails closed (see ErrTruncated).
 const DefaultStdoutLimit int64 = 4 << 20
 
+// DefaultCommitResultBytes caps one commit's result payload. It pairs
+// with the adapter stdout bound: results the producer legally emits
+// must pass, so the cap never shrinks below what the adapter may write.
+// It mirrors workflowv1.MaxCommitResultBytes (eshu-workflow@v0.2.0
+// workflowv1/commit.go) so the two sides cannot drift.
+const DefaultCommitResultBytes = 4 << 20
+
+// DefaultCommitBodyBytes caps the whole CommitClaimFacts envelope on
+// this seam: the result plus a 64 KiB budget for the mutation,
+// idempotency key, planned IDs, and JSON framing (4,194,304 + 65,536
+// = 4,259,840 bytes). The body cap itself is the bound on unbounded
+// identifier fields. It mirrors workflowv1.MaxCommitBodyBytes.
+const DefaultCommitBodyBytes = DefaultCommitResultBytes + 64<<10
+
 // ErrTruncated reports adapter output past the byte limit.
 var ErrTruncated = errors.New("cutovercontract: adapter output truncated")
 
@@ -40,12 +54,23 @@ type Runner interface {
 // Lease identifies one held claim. IDs are opaque strings minted by
 // the plane; the worker never interprets them. ClaimID is the spec
 // claim id (workflowv1 Claim.claim_id); LeaseID carries the granted work
-// item id as the opaque epoch key (workflowv1 WorkItem.work_item_id) until
-// the mutation path migrates to fenced ClaimMutation bodies, which need
-// the work item id alongside the claim id.
+// item id as the opaque epoch key (workflowv1 WorkItem.work_item_id).
+// The commit lane carries the fenced epoch with it: FencingToken is the
+// spec claim fencing token, ScopeID/SourceRunID/GenerationID are the
+// planned identity core matches the commit pin against, and the tenant
+// fields re-check the active grant before core persists source facts —
+// all copied from the granted work item and claim at claim time.
 type Lease struct {
-	ClaimID string
-	LeaseID string
+	ClaimID            string
+	LeaseID            string
+	FencingToken       int64
+	ScopeID            string
+	SourceRunID        string
+	GenerationID       string
+	TenantID           string
+	WorkspaceID        string
+	SubjectClass       string
+	PolicyRevisionHash string
 }
 
 // ClaimSelector identifies which collector actor is attempting to claim
@@ -88,9 +113,9 @@ type ClaimRequest struct {
 // matches the spec ClaimMutation field
 // (eshu-workflow@v0.1.0 workflowv1/claim.go:44); producer_id, lease_id,
 // and result_json are host-seam names with no spec slot — the spec
-// Complete carries no result (facts commit through the separate committer
-// path), so the result stays a host-seam field the server ignores on its
-// non-strict decode pending the commit lane.
+// Complete carries no result (facts commit through CommitClaimFacts),
+// so the result stays a host-seam field the satellite carries alongside
+// the state-only epoch move.
 type ClaimOutcome struct {
 	ProducerID string          `json:"producer_id"`
 	ClaimID    string          `json:"claim_id"`
@@ -98,12 +123,17 @@ type ClaimOutcome struct {
 	Result     json.RawMessage `json:"result_json,omitempty"`
 }
 
-// ClaimPlane is the remote claimed-service seam: claim, heartbeat,
-// terminal outcomes, and release. Implementations must be safe for
-// concurrent use.
+// ClaimPlane is the remote claimed-service seam: claim, commit, the
+// state-only complete, heartbeat, terminal outcomes, and release.
+// CommitClaimFacts persists the verbatim collector result through the
+// fenced epoch and reports only when the bytes are durable: the caller
+// then completes the claim with Complete, which stays state-only —
+// commit first, complete second, one fencing token for both.
+// Implementations must be safe for concurrent use.
 type ClaimPlane interface {
 	ClaimNext(ctx context.Context, req ClaimRequest) (Lease, bool, error)
 	Heartbeat(ctx context.Context, lease Lease) error
+	CommitClaimFacts(ctx context.Context, lease Lease, resultJSON []byte) error
 	Complete(ctx context.Context, lease Lease, resultJSON []byte) error
 	Release(ctx context.Context, lease Lease) error
 	FailRetryable(ctx context.Context, lease Lease) error

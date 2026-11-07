@@ -47,13 +47,15 @@ type contractEnvelope struct {
 // cannot spin the loop or stop the worker. A held claim re-polls
 // immediately after its outcome lands.
 //
-// Outcomes partition on the run: success completes the claim; a run
-// error fails the claim retryable and releases the hold; a grant denial
-// — any error wrapping cutovercontract.ErrGrantDenied, from the run or
-// from Complete — fails the claim terminal. Outcome calls are
-// best-effort: their errors never stop the loop. A cancelled context
-// skips outcome calls and returns, leaving the held lease to
-// plane-side expiry.
+// Outcomes partition on the run: success commits the verbatim result and
+// then completes the state-only claim; a run error fails the claim
+// retryable and releases the hold; a commit failure fails per the same
+// classifier without ever completing, so only the commit ack moves the
+// epoch. A grant denial — any error wrapping
+// cutovercontract.ErrGrantDenied, from the run, the commit, or the
+// complete — fails the claim terminal. Outcome calls are best-effort:
+// their errors never stop the loop. A cancelled context skips outcome
+// calls and returns, leaving the held lease to plane-side expiry.
 func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane cutovercontract.ClaimPlane) error {
 	if runner == nil {
 		return errors.New("worker: runner is required")
@@ -136,8 +138,13 @@ func newClaimID() string {
 }
 
 // serveOne executes one held claim: renew the lease with a heartbeat
-// while the collector runs, then report the outcome. Cancellation
-// abandons the outcome calls; the held lease expires plane-side.
+// while the collector runs, commit the verbatim result, then complete the
+// state-only epoch — commit first, complete second, one fencing token for
+// both. Only the {"ok":true} commit ack proceeds to Complete; every
+// commit failure fails per the existing retry classifier without ever
+// completing, so a 409-class refusal, a transport loss, or a 5xx never
+// moves the epoch. Cancellation abandons the outcome calls; the held
+// lease expires plane-side.
 func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane cutovercontract.ClaimPlane, lease cutovercontract.Lease) {
 	done := make(chan struct{})
 	go heartbeatLoop(ctx, plane, lease, cfg.HeartbeatInterval, done)
@@ -148,6 +155,13 @@ func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, pl
 	}
 	if runErr != nil {
 		failClaim(ctx, plane, lease, runErr)
+		return
+	}
+	if err := plane.CommitClaimFacts(ctx, lease, result); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		failClaim(ctx, plane, lease, err)
 		return
 	}
 	if err := plane.Complete(ctx, lease, result); err != nil {

@@ -38,11 +38,13 @@ const (
 	specContentType = "application/json"
 )
 
-// specRoutes is the v0.1.0 RouteTable subset this seam speaks
-// (workflowv1/http.go RouteTable, all POST with a JSON body).
+// specRoutes is the RouteTable subset this seam speaks
+// (workflowv1/http.go RouteTable: v0.1.0 pins plus the v0.2.0
+// CommitClaimFacts addition, all POST with a JSON body).
 var specRoutes = map[string]string{
 	"ClaimNext":          "/workflow.v1/ClaimNext",
 	"HeartbeatClaim":     "/workflow.v1/HeartbeatClaim",
+	"CommitClaimFacts":   "/workflow.v1/CommitClaimFacts",
 	"CompleteClaim":      "/workflow.v1/CompleteClaim",
 	"ReleaseClaim":       "/workflow.v1/ReleaseClaim",
 	"FailClaimRetryable": "/workflow.v1/FailClaimRetryable",
@@ -53,6 +55,7 @@ func TestSpecGoldenRoutes(t *testing.T) {
 	got := map[string]string{
 		"ClaimNext":          pathClaimNext,
 		"HeartbeatClaim":     pathHeartbeatClaim,
+		"CommitClaimFacts":   pathCommitClaimFacts,
 		"CompleteClaim":      pathCompleteClaim,
 		"ReleaseClaim":       pathReleaseClaim,
 		"FailClaimRetryable": pathFailClaimRetryable,
@@ -246,7 +249,8 @@ func TestSpecGoldenClaimNextResponseBody(t *testing.T) {
 	// full server grant carrying fields outside the read-subset still
 	// decodes — the pre-conformance flat shape fails closed.
 	full := `{"issued":true,"degraded_reason":"","grant":{"work_item":{"work_item_id":"w","run_id":"r",` +
-		`"collector_kind":"ec2:DescribeInstances","collector_instance_id":"i","status":"claimed"},` +
+		`"collector_kind":"ec2:DescribeInstances","collector_instance_id":"i","status":"claimed",` +
+		`"scope_id":"scope-9","source_run_id":"sr-9","generation_id":"gen-9"},` +
 		`"claim":{"claim_id":"c","work_item_id":"w","fencing_token":3,"owner_id":"test-producer",` +
 		`"status":"active"}},"deferral":{"signal":"","retry_after_ns":0}}`
 	stub := &stubPlane{bodies: map[string]stubResponse{
@@ -262,6 +266,10 @@ func TestSpecGoldenClaimNextResponseBody(t *testing.T) {
 	}
 	if lease.ClaimID != "c" || lease.LeaseID != "w" {
 		t.Fatalf("lease = %+v, want claim c on work w", lease)
+	}
+	if lease.FencingToken != 3 || lease.ScopeID != "scope-9" ||
+		lease.SourceRunID != "sr-9" || lease.GenerationID != "gen-9" {
+		t.Fatalf("lease = %+v, want the fenced epoch and planned ids from the grant", lease)
 	}
 
 	flat := &stubPlane{bodies: map[string]stubResponse{
