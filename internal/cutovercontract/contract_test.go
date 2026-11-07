@@ -38,6 +38,8 @@ func (f *fakePlane) ClaimNext(_ context.Context, req ClaimRequest) (Lease, bool,
 
 func (f *fakePlane) Heartbeat(_ context.Context, _ Lease) error { return nil }
 
+func (f *fakePlane) CommitClaimFacts(_ context.Context, _ Lease, result []byte) error { return nil }
+
 func (f *fakePlane) Complete(_ context.Context, _ Lease, result []byte) error {
 	if len(result) == 0 {
 		return errTestSentinel

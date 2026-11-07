@@ -34,6 +34,7 @@ type fakePlane struct {
 	answers     []claimAnswer
 	calls       []planeCall
 	completeErr error
+	commitErr   error
 	heartbeats  int
 }
 
@@ -62,6 +63,13 @@ func (f *fakePlane) Complete(_ context.Context, lease cutovercontract.Lease, res
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, planeCall{op: "Complete", lease: lease, result: result})
 	return f.completeErr
+}
+
+func (f *fakePlane) CommitClaimFacts(_ context.Context, lease cutovercontract.Lease, result []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, planeCall{op: "CommitClaimFacts", lease: lease, result: result})
+	return f.commitErr
 }
 
 func (f *fakePlane) Release(_ context.Context, lease cutovercontract.Lease) error {
@@ -255,8 +263,8 @@ func TestLoopCompletesClaim(t *testing.T) {
 		t.Fatalf("Loop: %v", err)
 	}
 	ops := opsAfterClaim(plane.ops())
-	if len(ops) == 0 || ops[0] != "Complete" {
-		t.Fatalf("ops after claim = %v, want Complete first", ops)
+	if len(ops) < 2 || ops[0] != "CommitClaimFacts" || ops[1] != "Complete" {
+		t.Fatalf("ops after claim = %v, want [CommitClaimFacts Complete ...]", ops)
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
@@ -312,8 +320,8 @@ func TestLoopTerminalOnCompleteGrantDeny(t *testing.T) {
 		t.Fatalf("Loop: %v", err)
 	}
 	ops := opsAfterClaim(plane.ops())
-	if len(ops) < 2 || ops[0] != "Complete" || ops[1] != "FailTerminal" {
-		t.Errorf("ops after claim = %v, want [Complete FailTerminal]", ops)
+	if len(ops) < 3 || ops[0] != "CommitClaimFacts" || ops[1] != "Complete" || ops[2] != "FailTerminal" {
+		t.Errorf("ops after claim = %v, want [CommitClaimFacts Complete FailTerminal]", ops)
 	}
 }
 
@@ -327,8 +335,8 @@ func TestLoopRetryableAndReleaseOnCompleteError(t *testing.T) {
 		t.Fatalf("Loop: %v", err)
 	}
 	ops := opsAfterClaim(plane.ops())
-	if len(ops) < 3 || ops[0] != "Complete" || ops[1] != "FailRetryable" || ops[2] != "Release" {
-		t.Errorf("ops after claim = %v, want [Complete FailRetryable Release]", ops)
+	if len(ops) < 4 || ops[0] != "CommitClaimFacts" || ops[1] != "Complete" || ops[2] != "FailRetryable" || ops[3] != "Release" {
+		t.Errorf("ops after claim = %v, want [CommitClaimFacts Complete FailRetryable Release]", ops)
 	}
 }
 

@@ -29,6 +29,7 @@ const DefaultMaxResponseBytes = 1 << 20
 const (
 	pathClaimNext          = "/workflow.v1/ClaimNext"
 	pathHeartbeatClaim     = "/workflow.v1/HeartbeatClaim"
+	pathCommitClaimFacts   = "/workflow.v1/CommitClaimFacts"
 	pathCompleteClaim      = "/workflow.v1/CompleteClaim"
 	pathReleaseClaim       = "/workflow.v1/ReleaseClaim"
 	pathFailClaimRetryable = "/workflow.v1/FailClaimRetryable"
@@ -75,6 +76,9 @@ type Config struct {
 	// this set fails closed locally with scope_mismatch before any byte
 	// touches the wire; the plane still refuses out-of-scope claims.
 	Scopes []string
+	// LeaseDuration is the hold carried on the commit mutation. Values
+	// <= 0 select DefaultLeaseDuration.
+	LeaseDuration time.Duration
 	// Grants re-reads the live producer-grant set on every call.
 	Grants GrantSource
 	// MaxResponseBytes bounds one response body. Values <= 0 select
@@ -85,21 +89,27 @@ type Config struct {
 	Clock func() time.Time
 }
 
-// Client is the remote claimed-service seam: claim, heartbeat, terminal
-// outcomes, and release over HTTP. A Client holds no core implementation
-// handle and is safe for concurrent use. It implements
+// DefaultLeaseDuration is the commit-mutation hold when Config leaves it
+// unset. It mirrors the worker's own default hold (60s) so the mutation
+// the client sends names the hold the loop actually requested.
+const DefaultLeaseDuration = 60 * time.Second
+
+// Client is the remote claimed-service seam: claim, commit, heartbeat,
+// terminal outcomes, and release over HTTP. A Client holds no core
+// implementation handle and is safe for concurrent use. It implements
 // cutovercontract.ClaimPlane exactly: the seam unification is a compile
 // check, not a structural echo.
 type Client struct {
-	baseURL    string
-	http       *http.Client
-	prodID     string
-	version    string
-	instanceID string
-	scopes     []string
-	clock      func() time.Time
-	grants     GrantSource
-	max        int64
+	baseURL       string
+	http          *http.Client
+	prodID        string
+	version       string
+	instanceID    string
+	scopes        []string
+	clock         func() time.Time
+	grants        GrantSource
+	max           int64
+	leaseDuration time.Duration
 }
 
 // compile check: the client is the ClaimPlane seam implementation.
@@ -139,16 +149,21 @@ func NewClient(cfg Config) (*Client, error) {
 	if max <= 0 {
 		max = DefaultMaxResponseBytes
 	}
+	leaseDuration := cfg.LeaseDuration
+	if leaseDuration <= 0 {
+		leaseDuration = DefaultLeaseDuration
+	}
 	return &Client{
-		baseURL:    base,
-		http:       &http.Client{Timeout: 30 * time.Second},
-		prodID:     strings.TrimSpace(cfg.ProducerID),
-		version:    strings.TrimSpace(cfg.ProducerVersion),
-		instanceID: strings.TrimSpace(cfg.CollectorInstanceID),
-		scopes:     append([]string(nil), cfg.Scopes...),
-		clock:      clock,
-		grants:     cfg.Grants,
-		max:        max,
+		baseURL:       base,
+		http:          &http.Client{Timeout: 30 * time.Second},
+		prodID:        strings.TrimSpace(cfg.ProducerID),
+		version:       strings.TrimSpace(cfg.ProducerVersion),
+		instanceID:    strings.TrimSpace(cfg.CollectorInstanceID),
+		scopes:        append([]string(nil), cfg.Scopes...),
+		clock:         clock,
+		grants:        cfg.Grants,
+		max:           max,
+		leaseDuration: leaseDuration,
 	}, nil
 }
 
@@ -168,20 +183,32 @@ type claimNextResponse struct {
 }
 
 // claimGrant is the spec ClaimedWorkItem read-subset: the work item and
-// claim ids this seam maps into a Lease.
+// claim halves this seam maps into a Lease — the work item id as the
+// opaque epoch key, the fencing token and planned identity for the
+// commit lane.
 type claimGrant struct {
 	WorkItem claimWorkItem `json:"work_item"`
 	Claim    claimRef      `json:"claim"`
 }
 
-// claimWorkItem carries the granted work item id.
+// claimWorkItem carries the granted work item id, the planned identity
+// core matches the commit pin against, and the tenant boundary the
+// commit re-checks before persisting.
 type claimWorkItem struct {
-	WorkItemID string `json:"work_item_id"`
+	WorkItemID         string `json:"work_item_id"`
+	ScopeID            string `json:"scope_id"`
+	SourceRunID        string `json:"source_run_id"`
+	GenerationID       string `json:"generation_id"`
+	TenantID           string `json:"tenant_id,omitempty"`
+	WorkspaceID        string `json:"workspace_id,omitempty"`
+	SubjectClass       string `json:"subject_class,omitempty"`
+	PolicyRevisionHash string `json:"policy_revision_hash,omitempty"`
 }
 
-// claimRef carries the granted claim id.
+// claimRef carries the granted claim id and its fencing token.
 type claimRef struct {
-	ClaimID string `json:"claim_id"`
+	ClaimID      string `json:"claim_id"`
+	FencingToken int64  `json:"fencing_token"`
 }
 
 // claimDeferral is the spec ClaimPacingDeferral read-subset
@@ -280,69 +307,30 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 	if strings.TrimSpace(resp.Grant.Claim.ClaimID) == "" || strings.TrimSpace(resp.Grant.WorkItem.WorkItemID) == "" {
 		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without ids")
 	}
-	return cutovercontract.Lease{ClaimID: resp.Grant.Claim.ClaimID, LeaseID: resp.Grant.WorkItem.WorkItemID}, true, nil
-}
-
-// Heartbeat renews the lease on a held claim epoch.
-func (c *Client) Heartbeat(ctx context.Context, lease cutovercontract.Lease) error {
-	return c.mutate(ctx, "HeartbeatClaim", pathHeartbeatClaim, lease, nil)
-}
-
-// Complete finishes a held claim after its generation committed. The result
-// must be non-empty verbatim JSON; anything else fails closed locally.
-func (c *Client) Complete(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
-	if len(resultJSON) == 0 {
-		return errors.New("claimplane CompleteClaim: result is required")
+	// The commit lane needs the fenced epoch with the grant: an epoch
+	// without a fencing token or without the planned identity core
+	// matches the pin against can never commit, so it fails closed at
+	// claim time instead of stranding the hold.
+	if resp.Grant.Claim.FencingToken <= 0 {
+		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without a fencing token")
 	}
-	return c.mutate(ctx, "CompleteClaim", pathCompleteClaim, lease, resultJSON)
-}
-
-// Release returns a held claim unworked.
-func (c *Client) Release(ctx context.Context, lease cutovercontract.Lease) error {
-	return c.mutate(ctx, "ReleaseClaim", pathReleaseClaim, lease, nil)
-}
-
-// FailRetryable records a retryable claim failure.
-func (c *Client) FailRetryable(ctx context.Context, lease cutovercontract.Lease) error {
-	return c.mutate(ctx, "FailClaimRetryable", pathFailClaimRetryable, lease, nil)
-}
-
-// FailTerminal records a terminal claim failure.
-func (c *Client) FailTerminal(ctx context.Context, lease cutovercontract.Lease) error {
-	return c.mutate(ctx, "FailClaimTerminal", pathFailClaimTerminal, lease, nil)
-}
-
-// mutate sends one fenced lifecycle mutation. A 2xx counts as success only
-// when the body is exactly the {"ok":true} acknowledgement.
-func (c *Client) mutate(ctx context.Context, op, path string, lease cutovercontract.Lease, result []byte) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("claimplane %s: %w", op, err)
+	item := resp.Grant.WorkItem
+	if strings.TrimSpace(item.ScopeID) == "" || strings.TrimSpace(item.SourceRunID) == "" ||
+		strings.TrimSpace(item.GenerationID) == "" {
+		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without planned ids")
 	}
-	if strings.TrimSpace(lease.ClaimID) == "" || strings.TrimSpace(lease.LeaseID) == "" {
-		return fmt.Errorf("claimplane %s: claim and lease ids are required", op)
-	}
-	if err := c.checkGrant(ctx); err != nil {
-		return err
-	}
-	req := cutovercontract.ClaimOutcome{ProducerID: c.prodID, ClaimID: lease.ClaimID, LeaseID: lease.LeaseID}
-	if result != nil {
-		req.Result = json.RawMessage(result)
-	}
-	status, envelope, body, err := c.roundTrip(ctx, op, path, req)
-	if err != nil {
-		return err
-	}
-	if status < 200 || status > 299 {
-		return c.callError(op, status, envelope)
-	}
-	var ack ackResponse
-	if err := decodeStrict(body, &ack); err != nil {
-		return c.callErrorText(op, CodeInvalid, err.Error())
-	}
-	if !ack.OK {
-		return c.callErrorText(op, CodeInvalid, "acknowledgement did not report ok")
-	}
-	return nil
+	return cutovercontract.Lease{
+		ClaimID:            resp.Grant.Claim.ClaimID,
+		LeaseID:            item.WorkItemID,
+		FencingToken:       resp.Grant.Claim.FencingToken,
+		ScopeID:            item.ScopeID,
+		SourceRunID:        item.SourceRunID,
+		GenerationID:       item.GenerationID,
+		TenantID:           item.TenantID,
+		WorkspaceID:        item.WorkspaceID,
+		SubjectClass:       item.SubjectClass,
+		PolicyRevisionHash: item.PolicyRevisionHash,
+	}, true, nil
 }
 
 // scopeDeclared reports whether scope is one of the declared collector

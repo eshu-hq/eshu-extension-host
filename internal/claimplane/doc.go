@@ -21,25 +21,37 @@
 //	                             collector_instance_id, owner_id, claim_id},
 //	                             observed_at, lease_ttl_ns} — the spec
 //	                             ClaimNextRequest (workflowv1/claim.go:133)
-//	                   response {issued, grant: {work_item: {work_item_id},
-//	                             claim: {claim_id}}, deferral: {signal,
+//	                   response {issued, grant: {work_item: {work_item_id,
+//	                             scope_id, source_run_id, generation_id,
+//	                             tenant_*}, claim: {claim_id,
+//	                             fencing_token}}, deferral: {signal,
 //	                             retry_after_ns}} — the spec ClaimNextResponse
 //	                             read-subset (workflowv1/claim.go:154,
 //	                             pacing.go:203); a full server grant with
 //	                   extra fields decodes, the pre-conformance flat shape
-//	                   fails closed on the missing grant half
+//	                   fails closed on the missing grant half; a grant
+//	                   without a fencing token or planned ids fails
+//	                   closed — it could never commit
 //	                   empty queue: 404 with code "not_found" -> found=false, nil error
 //	                   unissued 200 always carries the deferral; a deferral-less
 //	                   unissued answer is invalid, never paced
 //	HeartbeatClaim     POST /workflow.v1/HeartbeatClaim
-//	CompleteClaim      POST /workflow.v1/CompleteClaim (+ result_json, verbatim JSON)
+//	CommitClaimFacts   POST /workflow.v1/CommitClaimFacts (eshu-workflow@v0.2.0
+//	                   workflowv1/commit.go): the fenced mutation flat on the
+//	                   wire beside idempotency_key (the claim epoch id),
+//	                   scope_id/source_run_id/generation_id, and the verbatim
+//	                   result_json. Result and body caps mirror the spec
+//	                   (4 MiB + 4,259,840 B). The {"ok":true} ack means
+//	                   facts committed; only it proceeds to Complete.
+//	CompleteClaim      POST /workflow.v1/CompleteClaim (+ result_json, verbatim JSON;
+//	                   the state-only epoch move after the commit ack)
 //	ReleaseClaim       POST /workflow.v1/ReleaseClaim
 //	FailClaimRetryable POST /workflow.v1/FailClaimRetryable
 //	FailClaimTerminal  POST /workflow.v1/FailClaimTerminal
 //	                   mutation request {producer_id, claim_id, lease_id}
 //	                   (the host-seam ClaimOutcome; the spec fenced epoch
-//	                   needs work_item_id + fencing_token, which arrive
-//	                   with the commit lane — see the gap note below)
+//	                   needs work_item_id + fencing_token, which the commit
+//	                   lane carries — see the gap note below)
 //	                   mutation response is exactly {"ok":true} (strict decode,
 //	                   unknown fields and trailing data fail closed).
 //	Failures carry {"code","message","retry_after_seconds"}; the code
@@ -69,10 +81,11 @@
 // test (cmd/extension-host) carves this module itself out of the
 // stdlib-only guard, so no allowlist change was needed.
 //
-// Gap note: the mutation path still speaks the host-minimal body, not the
-// spec ClaimMutation (work_item_id, claim_id, fencing_token, owner_id,
-// observed_at, lease_duration_ns). The seam already retains everything the
-// migration needs — LeaseID carries the granted work item id — but the
-// fencing token has no holder yet, so the migration waits for the commit
-// lane that must carry the epoch anyway.
+// Gap note: the lifecycle mutation path (heartbeat, complete, release,
+// fail) still speaks the host-minimal body, not the spec ClaimMutation
+// (work_item_id, claim_id, fencing_token, owner_id, observed_at,
+// lease_duration_ns) — the satellite adapts it to the fenced epoch. The
+// commit lane carries the full spec shape itself: LeaseID holds the
+// granted work item id and the fencing token plus planned identity ride
+// the Lease from the grant.
 package claimplane

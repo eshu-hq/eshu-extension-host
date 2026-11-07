@@ -84,10 +84,19 @@ func TestDryRunDefaultsOffWhenEnabled(t *testing.T) {
 // recordingCommitter proves what the dry-run sink does and does not call.
 type recordingCommitter struct {
 	mu        sync.Mutex
+	committed int
 	completed int
 	retried   int
 	terminal  int
 	results   [][]byte
+}
+
+func (f *recordingCommitter) CommitClaimFacts(_ context.Context, _ cutovercontract.Lease, result []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.committed++
+	f.results = append(f.results, result)
+	return nil
 }
 
 func (f *recordingCommitter) Complete(_ context.Context, _ cutovercontract.Lease, result []byte) error {
@@ -117,6 +126,27 @@ func TestCommitterSatisfiedBySinkAndClient(t *testing.T) {
 	var _ Committer = (*recordingCommitter)(nil)
 }
 
+func TestCompareSinkDropsCommitClaimFacts(t *testing.T) {
+	// The shadow path never commits: the sink observes the result shape
+	// and drops it with no downstream call.
+	downstream := &recordingCommitter{}
+	var logged lockedBuffer
+	sink := newCompareSink(downstream, &logged)
+	lease := cutovercontract.Lease{ClaimID: "c1", LeaseID: "l1", FencingToken: 7}
+	result := []byte(`{"facts":[]}`)
+	if err := sink.CommitClaimFacts(context.Background(), lease, result); err != nil {
+		t.Fatalf("sink.CommitClaimFacts error = %v", err)
+	}
+	if downstream.committed != 0 {
+		t.Fatalf("downstream commit calls = %d, want 0 (shadow mode never commits)", downstream.committed)
+	}
+	sum := sha256.Sum256(result)
+	if got := logged.String(); !strings.Contains(got, fmt.Sprintf("%d", len(result))) ||
+		!strings.Contains(got, hex.EncodeToString(sum[:])) {
+		t.Fatalf("sink log %q lacks result byte count %d or sha256", got, len(result))
+	}
+}
+
 func TestCompareSinkNeverCallsComplete(t *testing.T) {
 	downstream := &recordingCommitter{}
 	var logged lockedBuffer
@@ -127,7 +157,7 @@ func TestCompareSinkNeverCallsComplete(t *testing.T) {
 		t.Fatalf("sink.Complete error = %v", err)
 	}
 	if downstream.completed != 0 {
-		t.Fatalf("downstream Complete calls = %d, want 0 (shadow mode never commits)", downstream.completed)
+		t.Fatalf("downstream Complete calls = %d, want 0 (shadow mode never completes)", downstream.completed)
 	}
 	sum := sha256.Sum256(result)
 	if got := logged.String(); !strings.Contains(got, fmt.Sprintf("%d", len(result))) ||
@@ -289,7 +319,8 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 	// path proves the shipped wiring claims.
 	var mu sync.Mutex
 	var selectors []cutovercontract.ClaimSelector
-	var completed int
+	var order []string
+	var commits []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
@@ -303,11 +334,20 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 			mu.Lock()
 			selectors = append(selectors, req.Selector)
 			mu.Unlock()
-			_, _ = io.WriteString(w, `{"issued":true,"grant":{"work_item":{"work_item_id":"w1"},"claim":{"claim_id":"c1"}}}`)
+			_, _ = io.WriteString(w, `{"issued":true,`+
+				`"grant":{"work_item":{"work_item_id":"w1","scope_id":"scope-1",`+
+				`"source_run_id":"sr-1","generation_id":"gen-1"},`+
+				`"claim":{"claim_id":"c1","fencing_token":7}}}`)
+		case "/workflow.v1/CommitClaimFacts":
+			mu.Lock()
+			order = append(order, "commit")
+			commits = append(commits, string(body))
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"ok":true}`)
 		case "/workflow.v1/CompleteClaim", "/workflow.v1/HeartbeatClaim":
 			mu.Lock()
 			if r.URL.Path == "/workflow.v1/CompleteClaim" {
-				completed++
+				order = append(order, "complete")
 			}
 			mu.Unlock()
 			_, _ = io.WriteString(w, `{"ok":true}`)
@@ -356,7 +396,29 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 			t.Error("claim id is empty, want a fresh nonce per poll")
 		}
 	}
-	if completed == 0 {
-		t.Error("no CompleteClaim reached the stub plane")
+	if len(order) == 0 || order[0] != "commit" {
+		t.Fatalf("outcome order = %v, want commit first (commit-then-complete)", order)
+	}
+	foundComplete := false
+	for _, op := range order {
+		if op == "complete" {
+			foundComplete = true
+		}
+	}
+	if !foundComplete {
+		t.Error("no CompleteClaim reached the stub plane after the commit ack")
+	}
+	if len(commits) == 0 {
+		t.Fatal("no CommitClaimFacts body recorded")
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(commits[0]), &envelope); err != nil {
+		t.Fatalf("commit body is not JSON: %v", err)
+	}
+	if string(envelope["fencing_token"]) != `7` {
+		t.Errorf("commit fencing_token = %s, want the grant epoch token 7", envelope["fencing_token"])
+	}
+	if string(envelope["result_json"]) != `{}` {
+		t.Errorf("commit result_json = %s, want the exact stub-runner bytes {}", envelope["result_json"])
 	}
 }

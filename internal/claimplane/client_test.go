@@ -117,11 +117,14 @@ func testClaimRequest() cutovercontract.ClaimRequest {
 }
 
 // specGrantBody renders the spec ClaimNextResponse grant half: issued with
-// a grant carrying the work item and claim ids. Extra server fields are
-// fine — the client decodes a forward-compatible read-subset.
+// a grant carrying the work item and claim ids, the epoch fencing token,
+// and the planned identity the commit matches the pin against. Extra
+// server fields are fine — the client decodes a forward-compatible
+// read-subset.
 func specGrantBody(workID, claimID string) string {
 	return `{"issued":true,"grant":{"work_item":{"work_item_id":"` + workID +
-		`"},"claim":{"claim_id":"` + claimID + `"}}}`
+		`","scope_id":"scope-1","source_run_id":"sr-1","generation_id":"gen-1"},` +
+		`"claim":{"claim_id":"` + claimID + `","fencing_token":7}}}`
 }
 
 func TestNewClientRejectsBadBaseURL(t *testing.T) {
@@ -287,6 +290,10 @@ func TestClaimNextRoundTrip(t *testing.T) {
 	if lease.ClaimID != "c1" || lease.LeaseID != "l1" {
 		t.Fatalf("lease = %+v, want c1/l1", lease)
 	}
+	if lease.FencingToken != 7 || lease.ScopeID != "scope-1" ||
+		lease.SourceRunID != "sr-1" || lease.GenerationID != "gen-1" {
+		t.Fatalf("lease = %+v, want the fenced epoch and planned ids from the grant", lease)
+	}
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	if len(stub.paths) != 1 || stub.paths[0] != "/workflow.v1/ClaimNext" {
@@ -365,6 +372,43 @@ func TestClaimNextIssuedWithoutIDs(t *testing.T) {
 	var call *CallError
 	if !errors.As(err, &call) || call.Code != CodeInvalid {
 		t.Fatalf("ClaimNext id-less issue = %v, want invalid", err)
+	}
+}
+
+func TestClaimNextRejectsGrantWithoutFencing(t *testing.T) {
+	// An epoch without a fencing token can never commit, so it fails
+	// closed at claim time instead of stranding the hold.
+	stub := &stubPlane{bodies: map[string]stubResponse{
+		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,` +
+			`"grant":{"work_item":{"work_item_id":"w","scope_id":"s","source_run_id":"r","generation_id":"g"},` +
+			`"claim":{"claim_id":"c"}}}`},
+	}}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
+	var call *CallError
+	if !errors.As(err, &call) || call.Code != CodeInvalid {
+		t.Fatalf("ClaimNext fenceless issue = %v, want invalid", err)
+	}
+}
+
+func TestClaimNextRejectsGrantWithoutPlannedIDs(t *testing.T) {
+	// Core matches the commit pin against the planned identity: a grant
+	// missing it can never commit, so it fails closed at claim time.
+	stub := &stubPlane{bodies: map[string]stubResponse{
+		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,` +
+			`"grant":{"work_item":{"work_item_id":"w"},"claim":{"claim_id":"c","fencing_token":3}}}`},
+	}}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	_, _, err := c.ClaimNext(context.Background(), testClaimRequest())
+	var call *CallError
+	if !errors.As(err, &call) || call.Code != CodeInvalid {
+		t.Fatalf("ClaimNext plan-less issue = %v, want invalid", err)
 	}
 }
 
