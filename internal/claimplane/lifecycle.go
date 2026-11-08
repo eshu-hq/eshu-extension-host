@@ -8,6 +8,7 @@ package claimplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,6 +29,9 @@ func (c *Client) Heartbeat(ctx context.Context, lease cutovercontract.Lease) err
 func (c *Client) Complete(ctx context.Context, lease cutovercontract.Lease, resultJSON []byte) error {
 	if len(resultJSON) == 0 {
 		return errors.New("claimplane CompleteClaim: result is required")
+	}
+	if !json.Valid(resultJSON) {
+		return errors.New("claimplane CompleteClaim: result must be valid JSON")
 	}
 	return c.mutate(ctx, "CompleteClaim", pathCompleteClaim, lease)
 }

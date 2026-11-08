@@ -124,7 +124,7 @@ func TestCompleteRejectsEmptyResult(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Complete(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}, nil); err == nil {
+	if err := c.Complete(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l", FencingToken: 7}, nil); err == nil {
 		t.Fatal("Complete empty result = nil, want validation error")
 	}
 	if n := stub.hitCount(); n != 0 {
@@ -138,8 +138,8 @@ func TestCompleteRejectsNonJSONResult(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Complete(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}, []byte("{oops")); err == nil {
-		t.Fatal("Complete non-JSON result = nil, want marshal error")
+	if err := c.Complete(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l", FencingToken: 7}, []byte("{oops")); err == nil {
+		t.Fatal("Complete non-JSON result = nil, want JSON validity error")
 	}
 	if n := stub.hitCount(); n != 0 {
 		t.Fatalf("non-JSON result touched the wire %d times, want 0", n)
