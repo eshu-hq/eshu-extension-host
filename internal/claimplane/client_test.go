@@ -500,3 +500,24 @@ func TestClaimNextCarriesSourceSystem(t *testing.T) {
 		t.Errorf("lease.SourceSystem = %q, want the planned src-1 from the grant", lease.SourceSystem)
 	}
 }
+
+// TestClaimNextPassesBlankSourceSystemThrough proves a grant without a
+// planned source system still decodes to a lease: the fail-closed
+// decision lives in the worker loop (terminal before child launch,
+// holding the lease the terminal outcome needs), never in the decode.
+func TestClaimNextPassesBlankSourceSystemThrough(t *testing.T) {
+	stub := &stubPlane{bodies: map[string]stubResponse{
+		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l1", "c1")},
+	}}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	lease, found, err := c.ClaimNext(context.Background(), testClaimRequest())
+	if err != nil || !found {
+		t.Fatalf("ClaimNext = %v,%v, want found lease", lease, err)
+	}
+	if lease.SourceSystem != "" {
+		t.Errorf("lease.SourceSystem = %q, want blank passed through for the loop to terminal", lease.SourceSystem)
+	}
+}
