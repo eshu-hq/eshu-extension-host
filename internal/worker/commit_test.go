@@ -34,6 +34,7 @@ func fencedLease() cutovercontract.Lease {
 		ScopeID:            "scope-1",
 		SourceRunID:        "sr-1",
 		GenerationID:       "gen-1",
+		SourceSystem:       "src-1",
 		TenantID:           "t-1",
 		WorkspaceID:        "w-1",
 		SubjectClass:       "s-1",

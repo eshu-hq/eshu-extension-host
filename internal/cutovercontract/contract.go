@@ -56,9 +56,10 @@ type Runner interface {
 // item id as the opaque epoch key (workflowv1 WorkItem.work_item_id).
 // The commit lane carries the fenced epoch with it: FencingToken is the
 // spec claim fencing token, ScopeID/SourceRunID/GenerationID are the
-// planned identity core matches the commit pin against, and the tenant
-// fields re-check the active grant before core persists source facts —
-// all copied from the granted work item and claim at claim time.
+// planned identity core matches the commit pin against, SourceSystem is
+// the planned source the satellite door requires on the echo, and the
+// tenant fields re-check the active grant before core persists source
+// facts — all copied from the granted work item and claim at claim time.
 type Lease struct {
 	ClaimID            string
 	LeaseID            string
@@ -66,6 +67,7 @@ type Lease struct {
 	ScopeID            string
 	SourceRunID        string
 	GenerationID       string
+	SourceSystem       string
 	TenantID           string
 	WorkspaceID        string
 	SubjectClass       string

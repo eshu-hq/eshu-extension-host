@@ -336,7 +336,7 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 			mu.Unlock()
 			_, _ = io.WriteString(w, `{"issued":true,`+
 				`"grant":{"work_item":{"work_item_id":"w1","scope_id":"scope-1",`+
-				`"source_run_id":"sr-1","generation_id":"gen-1"},`+
+				`"source_run_id":"sr-1","generation_id":"gen-1","source_system":"src-1"},`+
 				`"claim":{"claim_id":"c1","fencing_token":7}}}`)
 		case "/workflow.v1/CommitClaimFacts":
 			mu.Lock()

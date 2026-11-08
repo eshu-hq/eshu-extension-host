@@ -6,6 +6,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -25,7 +26,8 @@ func TestContractForRendersExtensionRequest(t *testing.T) {
 	lease := cutovercontract.Lease{
 		ClaimID: "c1", LeaseID: "w1", FencingToken: 1193046,
 		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
-		TenantID: "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
+		SourceSystem: "src-1",
+		TenantID:     "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
 		PolicyRevisionHash: "p-1",
 	}
 	raw := contractFor(cfg, lease)
@@ -86,7 +88,8 @@ func TestContractForMatchesGolden(t *testing.T) {
 	lease := cutovercontract.Lease{
 		ClaimID: "c1", LeaseID: "w1", FencingToken: 1193046,
 		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
-		TenantID: "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
+		SourceSystem: "src-1",
+		TenantID:     "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
 		PolicyRevisionHash: "p-1",
 	}
 	raw := contractFor(testConfig(), lease)
@@ -102,5 +105,61 @@ func TestContractForMatchesGolden(t *testing.T) {
 	}
 	if string(raw)+"\n" != string(want) {
 		t.Errorf("contract bytes differ from %s:\n got: %s\nwant: %s", golden, raw, want)
+	}
+}
+
+// TestContractForCarriesDivergentSourceSystem proves the child claim
+// carries the planned source system byte-exact even when it differs from
+// the collector kind: the two are independent planned facts (the live
+// window only ever showed them equal by planner coincidence), and the
+// satellite door requires the echo to match the plan.
+func TestContractForCarriesDivergentSourceSystem(t *testing.T) {
+	cfg := testConfig()
+	lease := cutovercontract.Lease{
+		ClaimID: "c1", LeaseID: "w1", FencingToken: 1193046,
+		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
+		SourceSystem: "src-9",
+		TenantID:     "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
+		PolicyRevisionHash: "p-1",
+	}
+	raw := contractFor(cfg, lease)
+	var req struct {
+		Claim map[string]json.RawMessage `json:"claim"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("contract is not a request: %v", err)
+	}
+	var kind, system string
+	if err := json.Unmarshal(req.Claim["collector_kind"], &kind); err != nil || kind != "component" {
+		t.Errorf("contract kind = %s, want component (from config scopes)", req.Claim["collector_kind"])
+	}
+	if err := json.Unmarshal(req.Claim["source_system"], &system); err != nil || system != "src-9" {
+		t.Errorf("contract source_system = %s, want the planned src-9 from the lease", req.Claim["source_system"])
+	}
+}
+
+// TestLoopTerminalOnBlankSourceSystem proves a grant without a planned
+// source system fails terminal before any child launch: the satellite
+// door would refuse the echo, so running the child can never commit and
+// only burns the hold. The verdict for #8877 orders terminal, never a
+// retryable spin.
+func TestLoopTerminalOnBlankSourceSystem(t *testing.T) {
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) {
+		return []byte(`{}`), nil
+	}}
+	lease := testLease()
+	lease.SourceSystem = ""
+	plane := &fakePlane{answers: []claimAnswer{{lease: lease, found: true}}}
+	if err := runLoop(t, testConfig(), runner, plane, testClaimTimeout); err != nil {
+		t.Fatalf("Loop: %v", err)
+	}
+	ops := opsAfterClaim(plane.ops())
+	if len(ops) == 0 || ops[0] != "FailTerminal" {
+		t.Errorf("ops after claim = %v, want FailTerminal first", ops)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.contracts) != 0 {
+		t.Errorf("child launched %d times, want zero (blank source system fails before launch)", len(runner.contracts))
 	}
 }
