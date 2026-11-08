@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
@@ -89,6 +90,8 @@ func TestContractForMatchesGolden(t *testing.T) {
 		ClaimID: "c1", LeaseID: "w1", FencingToken: 1193046,
 		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
 		SourceSystem: "src-1",
+		Attempt:      41,
+		Deadline:     time.Date(2026, 11, 8, 21, 0, 0, 0, time.UTC),
 		TenantID:     "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
 		PolicyRevisionHash: "p-1",
 	}

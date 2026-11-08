@@ -176,6 +176,9 @@ func runEnabled(ctx context.Context, cfg serverConfig, logger *slog.Logger, stde
 			"event_name", "runtime.startup.failed", "error", err)
 		return 1
 	}
+	// Claim outcome lines carry the failure cause the plane rows omit;
+	// without the host logger the next door refusal stays blind.
+	wcfg.Logger = logger
 	plane, err := newClaimPlaneClient(wcfg)
 	if err != nil {
 		logger.Error("claim-plane client invalid, failing closed",

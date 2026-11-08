@@ -123,7 +123,7 @@ func testClaimRequest() cutovercontract.ClaimRequest {
 // read-subset.
 func specGrantBody(workID, claimID string) string {
 	return `{"issued":true,"grant":{"work_item":{"work_item_id":"` + workID +
-		`","scope_id":"scope-1","source_run_id":"sr-1","generation_id":"gen-1"},` +
+		`","scope_id":"scope-1","source_run_id":"sr-1","generation_id":"gen-1","attempt_count":3},` +
 		`"claim":{"claim_id":"` + claimID + `","fencing_token":7}}}`
 }
 

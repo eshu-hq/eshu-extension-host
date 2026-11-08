@@ -253,6 +253,7 @@ func TestSpecGoldenClaimNextResponseBody(t *testing.T) {
 	// decodes — the pre-conformance flat shape fails closed.
 	full := `{"issued":true,"degraded_reason":"","grant":{"work_item":{"work_item_id":"w","run_id":"r",` +
 		`"collector_kind":"ec2:DescribeInstances","collector_instance_id":"i","status":"claimed",` +
+		`"attempt_count":2,` +
 		`"scope_id":"scope-9","source_run_id":"sr-9","generation_id":"gen-9"},` +
 		`"claim":{"claim_id":"c","work_item_id":"w","fencing_token":3,"owner_id":"test-producer",` +
 		`"status":"active"}},"deferral":{"signal":"","retry_after_ns":0}}`

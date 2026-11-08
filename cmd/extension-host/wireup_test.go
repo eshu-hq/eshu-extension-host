@@ -182,6 +182,7 @@ func TestEnabledConstructionErrorFailsWithoutValues(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID", "test-producer")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "test-instance")
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE", "rehearsal:test")
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", secret)
 	t.Setenv("ESHU_EXTENSIONHOST_COLLECTOR_PATH", "sh")
 	var stderr lockedBuffer
@@ -250,6 +251,7 @@ func TestSignalCancelStopsEnabledLoop(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID", "test-producer")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "test-instance")
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE", "rehearsal:test")
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", plane.URL)
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "10ms")
 	t.Setenv("ESHU_EXTENSIONHOST_COLLECTOR_PATH", "sh")
@@ -336,7 +338,8 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 			mu.Unlock()
 			_, _ = io.WriteString(w, `{"issued":true,`+
 				`"grant":{"work_item":{"work_item_id":"w1","scope_id":"scope-1",`+
-				`"source_run_id":"sr-1","generation_id":"gen-1","source_system":"src-1"},`+
+				`"source_run_id":"sr-1","generation_id":"gen-1","source_system":"src-1",`+
+				`"attempt_count":9},`+
 				`"claim":{"claim_id":"c1","fencing_token":7}}}`)
 		case "/workflow.v1/CommitClaimFacts":
 			mu.Lock()
@@ -361,6 +364,7 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID", "producer-9")
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "instance-7")
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE", "rehearsal:test")
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", srv.URL)
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "10ms")
 

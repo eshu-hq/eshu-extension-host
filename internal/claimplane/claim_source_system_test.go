@@ -20,7 +20,8 @@ func TestClaimNextCarriesSourceSystem(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
 		"/workflow.v1/ClaimNext": {status: 200, body: `{"issued":true,` +
 			`"grant":{"work_item":{"work_item_id":"l1","scope_id":"scope-1",` +
-			`"source_run_id":"sr-1","generation_id":"gen-1","source_system":"src-1"},` +
+			`"source_run_id":"sr-1","generation_id":"gen-1","source_system":"src-1",` +
+			`"attempt_count":5},` +
 			`"claim":{"claim_id":"c1","fencing_token":7}}}`},
 	}}
 	srv := httptest.NewServer(stub.handler())

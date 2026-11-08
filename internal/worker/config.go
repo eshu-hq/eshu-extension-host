@@ -5,6 +5,7 @@ package worker
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -14,12 +15,14 @@ import (
 // (eshu go/cmd/collector-component-extension/config.go and
 // cutover.go resolveCutoverPlan) so operators carry one vocabulary across
 // the extraction: the producer pin, the collector instance id, the scope
-// kind, the claim-plane URL, and the poll/lease timings.
+// kind, the config handle, the claim-plane URL, and the poll/lease
+// timings.
 const (
 	envProducerID      = "ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID"
 	envProducerVersion = "ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION"
 	envInstanceID      = "ESHU_COMPONENT_COLLECTOR_INSTANCE_ID"
 	envScopeKind       = "ESHU_COMPONENT_COLLECTOR_SCOPE_KIND"
+	envConfigHandle    = "ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE"
 	envClaimPlaneURL   = "ESHU_WORKFLOW_CLAIM_PLANE_URL"
 	envPollInterval    = "ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL"
 	envLeaseTTL        = "ESHU_COMPONENT_COLLECTOR_CLAIM_LEASE_TTL"
@@ -35,9 +38,12 @@ const (
 	defaultLeaseTTL     = 60 * time.Second
 )
 
-// Config is the enabled-flow worker wiring. Every field comes from the
-// environment via ConfigFromEnv; Loop trusts a constructed Config and
-// fails closed only on collaborator or identity misuse.
+// Config is the enabled-flow worker wiring. Every field but Logger
+// comes from the environment via ConfigFromEnv; Loop trusts a
+// constructed Config and fails closed only on collaborator or identity
+// misuse. Logger carries the host's structured logger for claim
+// outcome lines (a nil logger stays silent); it is set by the host
+// process, never from the environment.
 type Config struct {
 	// ProducerID and ProducerVersion pin the holder identity every
 	// grant decision evaluates under. They are never derived silently.
@@ -57,6 +63,12 @@ type Config struct {
 	// and kind, id, and kind-of-scope stay three separate facts even
 	// when one lane spells them the same.
 	ScopeKind string
+	// ConfigHandle is the static config handle rendered into each
+	// child claim. The door requires the echo; the rehearsal producer
+	// has no activation record to derive the in-tree handle from, so
+	// the operator pins a rehearsal-namespaced handle here, never
+	// derived silently.
+	ConfigHandle string
 	// ClaimPlaneURL is the remote plane origin (http or https).
 	ClaimPlaneURL string
 	// PollInterval paces re-claims on an empty queue or a failed
@@ -69,6 +81,9 @@ type Config struct {
 	// always a third of LeaseTTL, so the in-tree heartbeat<lease law
 	// holds by construction.
 	HeartbeatInterval time.Duration
+	// Logger receives claim outcome lines. See the Config doc: set by
+	// the host process, never from the environment.
+	Logger *slog.Logger
 }
 
 // ConfigFromEnv resolves the worker wiring from the environment. It
@@ -91,6 +106,10 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	scopes := strings.TrimSpace(getenv(envScopeKind))
 	if scopes == "" {
 		scopes = defaultScopeKind
+	}
+	configHandle := strings.TrimSpace(getenv(envConfigHandle))
+	if configHandle == "" {
+		return Config{}, fmt.Errorf("%s is required: the door requires the echo and the rehearsal producer has no activation record to derive it from", envConfigHandle)
 	}
 	planeURL := strings.TrimSpace(getenv(envClaimPlaneURL))
 	if planeURL == "" {
@@ -116,6 +135,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		CollectorInstanceID: instanceID,
 		Scopes:              scopes,
 		ScopeKind:           scopes,
+		ConfigHandle:        configHandle,
 		ClaimPlaneURL:       planeURL,
 		PollInterval:        pollInterval,
 		LeaseTTL:            leaseTTL,
