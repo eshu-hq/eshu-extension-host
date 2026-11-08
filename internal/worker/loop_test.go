@@ -271,12 +271,18 @@ func TestLoopCompletesClaim(t *testing.T) {
 	if len(runner.contracts) != 1 || len(runner.contracts[0]) == 0 {
 		t.Fatalf("runner got %d contracts, want 1 non-empty", len(runner.contracts))
 	}
-	var envelope map[string]string
-	if err := json.Unmarshal(runner.contracts[0], &envelope); err != nil {
-		t.Fatalf("contract is not JSON: %v", err)
+	var envelope struct {
+		ProtocolVersion string `json:"protocol_version"`
+		Claim           struct {
+			ComponentID string `json:"component_id"`
+			WorkItemID  string `json:"work_item_id"`
+		} `json:"claim"`
 	}
-	if envelope["claim_id"] != "c1" || envelope["lease_id"] != "l1" || envelope["producer_id"] != "test-producer" {
-		t.Errorf("contract envelope = %v, want claim/lease/producer ids", envelope)
+	if err := json.Unmarshal(runner.contracts[0], &envelope); err != nil {
+		t.Fatalf("contract is not a request: %v", err)
+	}
+	if envelope.ProtocolVersion == "" || envelope.Claim.ComponentID != "test-producer" || envelope.Claim.WorkItemID != "l1" {
+		t.Errorf("contract = %+v, want the extension request shape", envelope)
 	}
 }
 
