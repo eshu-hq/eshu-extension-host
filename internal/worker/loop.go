@@ -23,9 +23,12 @@ import (
 )
 
 // extensionProtocolVersion is the collector SDK wire the bundled
-// artifact decodes (collector-sdk/v1alpha3): the child strict-reads the
-// request claim, so this literal must match the artifact's SDK.
-const extensionProtocolVersion = "collector-sdk/v1alpha3"
+// artifact talks (collector-sdk/v1alpha1): the single-call contract the
+// saver commits. The artifact echoes the request version onto its
+// result, and the saver only commits the single-call versions —
+// asking with the paged version would fail every commit even for
+// complete, unpaged output. This literal must match both sides.
+const extensionProtocolVersion = "collector-sdk/v1alpha1"
 
 // childRequest is the full extension request handed to the collector
 // child on stdin. Field names mirror the in-tree extensionhost.Request

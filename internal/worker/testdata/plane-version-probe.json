@@ -1,0 +1,96 @@
+{
+  "note": "Live check of which collector result contracts the commit lane stores. Run 2026-11-08 against ops-qa. Both calls use made-up claim ids that match nothing, so nothing could be stored either way: the point is which check stops each call.",
+  "endpoint": "POST http://eshu-workflow-claim-plane:8080/workflow.v1/CommitClaimFacts, header Workflow-Protocol-Version: 1",
+  "proven_nce": {
+    "claim_plane_image": "ghcr.io/eshu-hq/eshu-workflow@sha256:bb4b1fa37d1dfaa92b30274c8c137010255fe8bebd76b1a4f12060b6bdf042eb",
+    "core_image": "ghcr.io/eshu-hq/eshu:sha-93b1af01538cd0e1cd1a5e33e7cea3fe9384537d@sha256:cff7a51a69799d07dc9be8f4b1242a24677344848bfab0890be680c77395355a"
+  },
+  "cases": [
+    {
+      "sent_result_contract": "collector-sdk/v1alpha3",
+      "request": {
+        "work_item_id": "probe-nonexistent-w1",
+        "claim_id": "probe-nonexistent-c1",
+        "fencing_token": 1193046,
+        "owner_id": "probe-owner",
+        "observed_at": "2026-11-08T12:00:00Z",
+        "lease_duration_ns": 60000000000,
+        "scope_id": "probe-scope",
+        "source_run_id": "probe-run",
+        "generation_id": "probe-gen",
+        "idempotency_key": "probe-nonexistent-c1",
+        "result_json": {
+          "protocol_version": "collector-sdk/v1alpha3",
+          "state": "complete",
+          "claim": {
+            "component_id": "probe",
+            "instance_id": "probe",
+            "collector_kind": "component",
+            "source_system": "probe",
+            "scope": {
+              "id": "probe-scope"
+            },
+            "source_run_id": "probe-run",
+            "generation_id": "probe-gen",
+            "work_item_id": "probe-nonexistent-w1",
+            "fencing_token": "1193046"
+          },
+          "generation": {
+            "id": "probe-gen",
+            "observed_at": "2026-11-08T12:00:00Z"
+          },
+          "facts": []
+        }
+      },
+      "response_http": 400,
+      "response_body": {
+        "code": "invalid",
+        "message": "invalid carrier: commit claim facts: protocol_version \"collector-sdk/v1alpha3\" is not a single-call version"
+      },
+      "reads_as": "stopped at the contract check; the claim itself was never looked at"
+    },
+    {
+      "sent_result_contract": "collector-sdk/v1alpha1",
+      "request": {
+        "work_item_id": "probe-nonexistent-w1",
+        "claim_id": "probe-nonexistent-c1",
+        "fencing_token": 1193046,
+        "owner_id": "probe-owner",
+        "observed_at": "2026-11-08T12:00:00Z",
+        "lease_duration_ns": 60000000000,
+        "scope_id": "probe-scope",
+        "source_run_id": "probe-run",
+        "generation_id": "probe-gen",
+        "idempotency_key": "probe-nonexistent-c1",
+        "result_json": {
+          "protocol_version": "collector-sdk/v1alpha1",
+          "state": "complete",
+          "claim": {
+            "component_id": "probe",
+            "instance_id": "probe",
+            "collector_kind": "component",
+            "source_system": "probe",
+            "scope": {
+              "id": "probe-scope"
+            },
+            "source_run_id": "probe-run",
+            "generation_id": "probe-gen",
+            "work_item_id": "probe-nonexistent-w1",
+            "fencing_token": "1193046"
+          },
+          "generation": {
+            "id": "probe-gen",
+            "observed_at": "2026-11-08T12:00:00Z"
+          },
+          "facts": []
+        }
+      },
+      "response_http": 400,
+      "response_body": {
+        "code": "invalid",
+        "message": "invalid carrier: commit claim facts: result component does not match the caller"
+      },
+      "reads_as": "passed the contract check and reached the claim identity check (it fails there only because the probe used a made-up component)"
+    }
+  ]
+}
