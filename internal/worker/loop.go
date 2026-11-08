@@ -59,7 +59,8 @@ type childClaim struct {
 
 // childScope names the claimed scope.
 type childScope struct {
-	ID string `json:"id"`
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
 }
 
 // childContract declares the artifact contract version. Facts ride the
@@ -260,7 +261,7 @@ func contractFor(cfg Config, lease cutovercontract.Lease) []byte {
 			InstanceID:    cfg.CollectorInstanceID,
 			CollectorKind: cfg.Scopes,
 			SourceSystem:  lease.SourceSystem,
-			Scope:         childScope{ID: lease.ScopeID},
+			Scope:         childScope{ID: lease.ScopeID, Kind: cfg.ScopeKind},
 			SourceRunID:   lease.SourceRunID,
 			GenerationID:  lease.GenerationID,
 			WorkItemID:    lease.LeaseID,

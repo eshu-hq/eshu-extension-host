@@ -163,3 +163,31 @@ func TestLoopTerminalOnBlankSourceSystem(t *testing.T) {
 		t.Errorf("child launched %d times, want zero (blank source system fails before launch)", len(runner.contracts))
 	}
 }
+
+// TestContractForCarriesConfiguredScopeKind proves the child claim scope
+// carries the configured scope kind, not the collector kind and not the
+// scope id: the satellite door requires the echo, and kind, id, and kind
+// of scope are three independent facts (the live window only ever showed
+// all three equal by domain coincidence).
+func TestContractForCarriesConfiguredScopeKind(t *testing.T) {
+	cfg := testConfig()
+	cfg.Scopes = "component"
+	cfg.ScopeKind = "scope-kind-9"
+	lease := testLease()
+	raw := contractFor(cfg, lease)
+	var req struct {
+		Claim struct {
+			Kind  string `json:"collector_kind"`
+			Scope struct {
+				ID   string `json:"id"`
+				Kind string `json:"kind"`
+			} `json:"scope"`
+		} `json:"claim"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("contract is not a request: %v", err)
+	}
+	if req.Claim.Kind != "component" || req.Claim.Scope.ID != "scope-1" || req.Claim.Scope.Kind != "scope-kind-9" {
+		t.Errorf("contract claim = %+v, want kind component, scope scope-1/scope-kind-9", req.Claim)
+	}
+}

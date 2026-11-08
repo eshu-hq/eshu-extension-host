@@ -128,6 +128,7 @@ func testConfig() Config {
 		ProducerVersion:     "v0.1.0",
 		CollectorInstanceID: "test-instance",
 		Scopes:              "component",
+		ScopeKind:           "scope-kind-1",
 		ClaimPlaneURL:       "https://plane.internal",
 		PollInterval:        time.Millisecond,
 		LeaseTTL:            60 * time.Second,

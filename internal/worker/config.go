@@ -51,6 +51,12 @@ type Config struct {
 	CollectorInstanceID string
 	// Scopes is the declared collector kind carried on each ClaimNext.
 	Scopes string
+	// ScopeKind is the collector's static scope kind rendered into each
+	// child claim scope. It mirrors the in-tree collector config: the
+	// satellite door requires the echo, core matches the scope id only,
+	// and kind, id, and kind-of-scope stay three separate facts even
+	// when one lane spells them the same.
+	ScopeKind string
 	// ClaimPlaneURL is the remote plane origin (http or https).
 	ClaimPlaneURL string
 	// PollInterval paces re-claims on an empty queue or a failed
@@ -109,6 +115,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		ProducerVersion:     producerVersion,
 		CollectorInstanceID: instanceID,
 		Scopes:              scopes,
+		ScopeKind:           scopes,
 		ClaimPlaneURL:       planeURL,
 		PollInterval:        pollInterval,
 		LeaseTTL:            leaseTTL,
