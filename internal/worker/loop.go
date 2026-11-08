@@ -15,21 +15,52 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
 
-// contractEnvelope is the minimal claim context handed to the collector
-// child on stdin. Field names reuse the claim-plane vocabulary; the
-// collector artifact owns the input schema and this envelope is its v0
-// shape. The adapter validates the result, never this input.
-type contractEnvelope struct {
-	ProducerID string `json:"producer_id"`
-	ClaimID    string `json:"claim_id"`
-	LeaseID    string `json:"lease_id"`
-	Scopes     string `json:"scopes"`
+// extensionProtocolVersion is the collector SDK wire the bundled
+// artifact decodes (collector-sdk/v1alpha3): the child strict-reads the
+// request claim, so this literal must match the artifact's SDK.
+const extensionProtocolVersion = "collector-sdk/v1alpha3"
+
+// childRequest is the full extension request handed to the collector
+// child on stdin. Field names mirror the in-tree extensionhost.Request
+// the artifact decodes (eshu go/internal/collector/extensionhost): the
+// collector artifact owns the input schema, so this struct tracks it
+// field-for-field and the adapter validates the result, never this
+// input. The fencing token rides decimal — the child parses base-10.
+type childRequest struct {
+	ProtocolVersion string        `json:"protocol_version"`
+	Claim           childClaim    `json:"claim"`
+	Contract        childContract `json:"contract"`
+}
+
+// childClaim is the claimed-epoch half of the child request.
+type childClaim struct {
+	ComponentID   string     `json:"component_id"`
+	InstanceID    string     `json:"instance_id"`
+	CollectorKind string     `json:"collector_kind"`
+	Scope         childScope `json:"scope"`
+	SourceRunID   string     `json:"source_run_id"`
+	GenerationID  string     `json:"generation_id"`
+	WorkItemID    string     `json:"work_item_id"`
+	FencingToken  string     `json:"fencing_token"`
+}
+
+// childScope names the claimed scope.
+type childScope struct {
+	ID string `json:"id"`
+}
+
+// childContract declares the artifact contract version. Facts ride the
+// pinned artifact, not this envelope, so the declaration stays empty.
+type childContract struct {
+	ProtocolVersion string `json:"protocol_version"`
+	Facts           []any  `json:"facts"`
 }
 
 // Loop polls the plane and serves one claim at a time until ctx is done,
@@ -201,16 +232,29 @@ func heartbeatLoop(ctx context.Context, plane cutovercontract.ClaimPlane, lease 
 	}
 }
 
-// contractFor renders the claim envelope for the collector child. The
-// fields are strings by construction, so encoding cannot fail; a
-// failure would be a coding error and fails closed with an empty
-// object the adapter strict-decode rejects.
+// contractFor renders the extension request for the collector child
+// from the worker config and the granted lease: holder and instance
+// identity from config, scope/run/generation/work-item plus the decimal
+// fencing token from the grant. The fields are strings by construction,
+// so encoding cannot fail; a failure would be a coding error and fails
+// closed with an empty object the adapter strict-decode rejects.
 func contractFor(cfg Config, lease cutovercontract.Lease) []byte {
-	raw, err := json.Marshal(contractEnvelope{
-		ProducerID: cfg.ProducerID,
-		ClaimID:    lease.ClaimID,
-		LeaseID:    lease.LeaseID,
-		Scopes:     cfg.Scopes,
+	raw, err := json.Marshal(childRequest{
+		ProtocolVersion: extensionProtocolVersion,
+		Claim: childClaim{
+			ComponentID:   cfg.ProducerID,
+			InstanceID:    cfg.CollectorInstanceID,
+			CollectorKind: cfg.Scopes,
+			Scope:         childScope{ID: lease.ScopeID},
+			SourceRunID:   lease.SourceRunID,
+			GenerationID:  lease.GenerationID,
+			WorkItemID:    lease.LeaseID,
+			FencingToken:  strconv.FormatInt(lease.FencingToken, 10),
+		},
+		Contract: childContract{
+			ProtocolVersion: extensionProtocolVersion,
+			Facts:           []any{},
+		},
 	})
 	if err != nil {
 		return []byte(`{}`)
