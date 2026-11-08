@@ -15,7 +15,6 @@ package cutovercontract
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 )
@@ -108,19 +107,20 @@ type ClaimRequest struct {
 	LeaseTTL   time.Duration `json:"lease_ttl_ns"`
 }
 
-// ClaimOutcome carries one fenced lifecycle mutation: the epoch the plane
-// must move plus, for Complete, the verbatim collector result. claim_id
-// matches the spec ClaimMutation field
-// (eshu-workflow@v0.1.0 workflowv1/claim.go:44); producer_id, lease_id,
-// and result_json are host-seam names with no spec slot — the spec
-// Complete carries no result (facts commit through CommitClaimFacts),
-// so the result stays a host-seam field the satellite carries alongside
-// the state-only epoch move.
-type ClaimOutcome struct {
-	ProducerID string          `json:"producer_id"`
-	ClaimID    string          `json:"claim_id"`
-	LeaseID    string          `json:"lease_id"`
-	Result     json.RawMessage `json:"result_json,omitempty"`
+// ClaimMutation carries one fenced lifecycle mutation: the epoch the
+// plane must move. It mirrors workflowv1.ClaimMutation field-for-field
+// (eshu-workflow@v0.2.0 workflowv1/claim.go:42): work_item_id, claim_id,
+// fencing_token, owner_id, observed_at, lease_duration_ns. The spec
+// Complete carries no result — facts commit through CommitClaimFacts
+// first, so Complete stays a state-only epoch move and the verbatim
+// result never rides a mutation body.
+type ClaimMutation struct {
+	WorkItemID    string        `json:"work_item_id"`
+	ClaimID       string        `json:"claim_id"`
+	FencingToken  int64         `json:"fencing_token"`
+	OwnerID       string        `json:"owner_id"`
+	ObservedAt    time.Time     `json:"observed_at"`
+	LeaseDuration time.Duration `json:"lease_duration_ns"`
 }
 
 // ClaimPlane is the remote claimed-service seam: claim, commit, the

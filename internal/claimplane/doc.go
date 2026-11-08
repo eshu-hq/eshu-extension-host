@@ -43,15 +43,16 @@
 //	                   result_json. Result and body caps mirror the spec
 //	                   (4 MiB + 4,259,840 B). The {"ok":true} ack means
 //	                   facts committed; only it proceeds to Complete.
-//	CompleteClaim      POST /workflow.v1/CompleteClaim (+ result_json, verbatim JSON;
-//	                   the state-only epoch move after the commit ack)
+//	CompleteClaim      POST /workflow.v1/CompleteClaim (state-only: the
+//	                   verbatim result already committed through
+//	                   CommitClaimFacts, so no result rides this body)
 //	ReleaseClaim       POST /workflow.v1/ReleaseClaim
 //	FailClaimRetryable POST /workflow.v1/FailClaimRetryable
 //	FailClaimTerminal  POST /workflow.v1/FailClaimTerminal
-//	                   mutation request {producer_id, claim_id, lease_id}
-//	                   (the host-seam ClaimOutcome; the spec fenced epoch
-//	                   needs work_item_id + fencing_token, which the commit
-//	                   lane carries — see the gap note below)
+//	                   mutation request {work_item_id, claim_id,
+//	                   fencing_token, owner_id, observed_at,
+//	                   lease_duration_ns} — the spec ClaimMutation
+//	                   (eshu-workflow@v0.2.0 workflowv1/claim.go:42)
 //	                   mutation response is exactly {"ok":true} (strict decode,
 //	                   unknown fields and trailing data fail closed).
 //	Failures carry {"code","message","retry_after_seconds"}; the code
@@ -75,17 +76,12 @@
 // Seam conformance: the Client implements cutovercontract.ClaimPlane
 // exactly (a compile assertion in client.go, not a structural echo):
 // ClaimNext takes the spec-shaped ClaimRequest and returns the seam
-// Lease; Heartbeat/Complete/Release/FailRetryable/FailTerminal take the
-// seam Lease, and mutations send the seam ClaimOutcome. The claimplane
-// package imports cutovercontract directly; the whole-module boundary
-// test (cmd/extension-host) carves this module itself out of the
-// stdlib-only guard, so no allowlist change was needed.
-//
-// Gap note: the lifecycle mutation path (heartbeat, complete, release,
-// fail) still speaks the host-minimal body, not the spec ClaimMutation
-// (work_item_id, claim_id, fencing_token, owner_id, observed_at,
-// lease_duration_ns) — the satellite adapts it to the fenced epoch. The
-// commit lane carries the full spec shape itself: LeaseID holds the
-// granted work item id and the fencing token plus planned identity ride
-// the Lease from the grant.
+// Lease; Heartbeat/CommitClaimFacts/Complete/Release/FailRetryable/
+// FailTerminal take the seam Lease, and every mutation sends the spec
+// fenced epoch: LeaseID holds the granted work item id and the fencing
+// token plus planned identity ride the Lease from the grant. The
+// claimplane package imports cutovercontract directly; the
+// whole-module boundary test (cmd/extension-host) carves this module
+// itself out of the stdlib-only guard, so no allowlist change was
+// needed.
 package claimplane

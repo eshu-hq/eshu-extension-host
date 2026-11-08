@@ -160,16 +160,20 @@ func TestClaimRequestWireNames(t *testing.T) {
 	}
 }
 
-// TestClaimOutcomeWireNames pins the outcome JSON names: claim_id matches
-// the spec ClaimMutation field (workflowv1/claim.go:44); lease_id and
-// result_json are host-seam names with no spec slot (the spec Complete
-// carries no result), so they are pinned here as the seam contract.
-func TestClaimOutcomeWireNames(t *testing.T) {
-	out := ClaimOutcome{ProducerID: "p", ClaimID: "c", LeaseID: "l", Result: json.RawMessage(`{}`)}
-	if got, want := wireKeys(t, out), []string{"producer_id", "claim_id", "lease_id", "result_json"}; !sameKeys(got, want) {
-		t.Fatalf("outcome keys = %v, want %v", got, want)
+// TestClaimMutationWireNames pins the mutation JSON names to the spec
+// fenced epoch (eshu-workflow@v0.2.0 workflowv1/claim.go:42):
+// work_item_id, claim_id, fencing_token, owner_id, observed_at,
+// lease_duration_ns. The pre-conformance host-seam names (producer_id,
+// lease_id, result_json) have no spec slot — the live plane rejects
+// them — so they must not appear here.
+func TestClaimMutationWireNames(t *testing.T) {
+	out := ClaimMutation{
+		WorkItemID: "w", ClaimID: "c", FencingToken: 7,
+		OwnerID: "p", ObservedAt: time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC),
+		LeaseDuration: 60 * time.Second,
 	}
-	if got, want := wireKeys(t, ClaimOutcome{}), []string{"producer_id", "claim_id", "lease_id"}; !sameKeys(got, want) {
-		t.Fatalf("empty outcome keys = %v, want %v (result omits when empty)", got, want)
+	want := []string{"work_item_id", "claim_id", "fencing_token", "owner_id", "observed_at", "lease_duration_ns"}
+	if got := wireKeys(t, out); !sameKeys(got, want) {
+		t.Fatalf("mutation keys = %v, want %v", got, want)
 	}
 }
