@@ -195,6 +195,11 @@ func TestLoopRejectsNilCollaborators(t *testing.T) {
 	if err := Loop(context.Background(), bad, runner, plane); err == nil {
 		t.Error("empty instance id: got nil error, want fail-closed")
 	}
+	bad = cfg
+	bad.ScopeKind = "  "
+	if err := Loop(context.Background(), bad, runner, plane); err == nil {
+		t.Error("blank scope kind: got nil error, want fail-closed (door requires the echo)")
+	}
 }
 
 func TestClaimRequestCarriesDistinctInstanceID(t *testing.T) {

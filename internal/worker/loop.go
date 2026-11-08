@@ -75,8 +75,9 @@ type childContract struct {
 // nil runner or plane, an empty producer identity or version, an empty
 // collector instance id, empty scopes, or a non-positive poll or
 // heartbeat interval fails closed at entry. Every poll builds the
-// spec-shaped ClaimRequest from Config — the scope kind selects the
-// collector kind, the dedicated instance knob feeds the plane's (kind,
+// spec-shaped ClaimRequest from Config — the declared kind rides the
+// match key, the configured scope kind renders into each child claim
+// scope, the dedicated instance knob feeds the plane's (kind,
 // instance) match key, the producer id pins the owner slot, the lease TTL
 // rides as the requested hold, and the claim id is a fresh nonce per
 // poll — and the client stamps ObservedAt. Every other failure is
@@ -112,6 +113,9 @@ func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane 
 	}
 	if strings.TrimSpace(cfg.Scopes) == "" {
 		return errors.New("worker: scopes are required")
+	}
+	if strings.TrimSpace(cfg.ScopeKind) == "" {
+		return errors.New("worker: scope kind is required")
 	}
 	if cfg.PollInterval <= 0 {
 		return errors.New("worker: poll interval must be positive")
