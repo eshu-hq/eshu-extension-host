@@ -8,13 +8,15 @@
 // (eshu go/internal/collector/extensionhost/remote/claim). A change to
 // any pinned literal fails here before it can break plane interop.
 //
-// Pinned: ClaimNext request/response BODY field names. The request body
-// is the spec ClaimNextRequest (workflowv1/claim.go:133-136) and the
-// response decodes the spec ClaimNextResponse read-subset
-// (workflowv1/claim.go:154-157, pacing.go:203-210). Deliberately NOT
-// pinned: the mutation bodies, which still speak the host-seam
-// ClaimOutcome — the spec ClaimMutation needs work_item_id plus the
-// fencing token, which arrive with the commit lane (see doc.go).
+// Pinned: ClaimNext request/response BODY field names, and the lifecycle
+// mutation BODY field names. The request body is the spec
+// ClaimNextRequest (workflowv1/claim.go:133-136) and the response
+// decodes the spec ClaimNextResponse read-subset
+// (workflowv1/claim.go:154-157, pacing.go:203-210). The mutation bodies
+// are the spec ClaimMutation (eshu-workflow@v0.2.0
+// workflowv1/claim.go:42): work_item_id, claim_id, fencing_token,
+// owner_id, observed_at, lease_duration_ns — the pre-conformance
+// host-seam names are gone (see doc.go).
 package claimplane
 
 import (
@@ -23,6 +25,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
 )
@@ -87,7 +90,7 @@ func TestSpecGoldenRequestHeaders(t *testing.T) {
 	if _, _, err := c.ClaimNext(context.Background(), testClaimRequest()); err != nil {
 		t.Fatalf("ClaimNext: %v", err)
 	}
-	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err != nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l", FencingToken: 7}); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
 	stub.mu.Lock()
@@ -138,7 +141,7 @@ func TestSpecGoldenAckShape(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err != nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l", FencingToken: 7}); err != nil {
 		t.Fatalf("Heartbeat server ack bytes = %v, want success", err)
 	}
 }
@@ -284,24 +287,41 @@ func TestSpecGoldenClaimNextResponseBody(t *testing.T) {
 	}
 }
 
-func TestSpecGoldenClaimOutcomeTags(t *testing.T) {
-	// The seam ClaimOutcome marshals claim_id exactly as the spec
-	// ClaimMutation names it (workflowv1/claim.go:44); producer_id,
-	// lease_id, and result_json are host-seam names pinned here as the
-	// seam contract (the spec Complete carries no result).
-	out := cutovercontract.ClaimOutcome{
-		ProducerID: "test-producer",
-		ClaimID:    "c",
-		LeaseID:    "l",
-		Result:     json.RawMessage(`{"kind":"ec2"}`),
+func TestSpecGoldenClaimMutationTags(t *testing.T) {
+	// The seam ClaimMutation marshals exactly the spec ClaimMutation
+	// field names (eshu-workflow@v0.2.0 workflowv1/claim.go:42):
+	// work_item_id, claim_id, fencing_token, owner_id, observed_at,
+	// lease_duration_ns. The pre-conformance host-seam names
+	// (producer_id, lease_id, result_json) have no spec slot — the live
+	// plane strict-decodes mutations, so they must not appear here. The
+	// spec Complete carries no result: facts commit through
+	// CommitClaimFacts first.
+	now := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
+	out := cutovercontract.ClaimMutation{
+		WorkItemID: "w", ClaimID: "c", FencingToken: 7,
+		OwnerID: "test-producer", ObservedAt: now,
+		LeaseDuration: 60 * time.Second,
 	}
 	raw, err := json.Marshal(out)
 	if err != nil {
-		t.Fatalf("marshal ClaimOutcome: %v", err)
+		t.Fatalf("marshal ClaimMutation: %v", err)
 	}
-	obj := wantKeys(t, "ClaimOutcome body", string(raw), "claim_id", "lease_id", "producer_id", "result_json")
-	var result map[string]string
-	if err := json.Unmarshal(obj["result_json"], &result); err != nil || result["kind"] != "ec2" {
-		t.Fatalf("result_json = %s, want the verbatim collector result", obj["result_json"])
+	obj := wantKeys(t, "ClaimMutation body", string(raw),
+		"work_item_id", "claim_id", "fencing_token",
+		"owner_id", "observed_at", "lease_duration_ns")
+	var decoded struct {
+		WorkItemID    string `json:"work_item_id"`
+		ClaimID       string `json:"claim_id"`
+		FencingToken  int64  `json:"fencing_token"`
+		OwnerID       string `json:"owner_id"`
+		LeaseDuration int64  `json:"lease_duration_ns"`
 	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode ClaimMutation: %v", err)
+	}
+	if decoded.WorkItemID != "w" || decoded.ClaimID != "c" || decoded.FencingToken != 7 ||
+		decoded.OwnerID != "test-producer" || decoded.LeaseDuration != int64(time.Minute) {
+		t.Fatalf("ClaimMutation = %+v, want the fenced epoch", decoded)
+	}
+	_ = obj
 }

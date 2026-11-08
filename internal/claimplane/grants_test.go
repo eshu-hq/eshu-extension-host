@@ -116,12 +116,12 @@ func TestGrantRecheckDeniesLifecycleWithoutWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"}); err != nil {
+	if err := c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l", FencingToken: 7}); err != nil {
 		t.Fatalf("Heartbeat allowed = %v, want nil", err)
 	}
 	mutable.set(false, ReasonRevoked)
 	before := stub.hitCount()
-	err = c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l"})
+	err = c.Heartbeat(context.Background(), cutovercontract.Lease{ClaimID: "c", LeaseID: "l", FencingToken: 7})
 	if !errors.Is(err, ErrGrantDenied) {
 		t.Fatalf("Heartbeat revoked = %v, want wrapped ErrGrantDenied", err)
 	}
