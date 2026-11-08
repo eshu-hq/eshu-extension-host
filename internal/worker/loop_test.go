@@ -135,8 +135,16 @@ func testConfig() Config {
 	}
 }
 
+// testLease is a complete grant: the fenced epoch, the planned identity
+// the commit matches the pin against, and the tenant grant the commit
+// re-checks before core persists source facts.
 func testLease() cutovercontract.Lease {
-	return cutovercontract.Lease{ClaimID: "c1", LeaseID: "l1"}
+	return cutovercontract.Lease{
+		ClaimID: "c1", LeaseID: "l1", FencingToken: 1193046,
+		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
+		TenantID: "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
+		PolicyRevisionHash: "p-1",
+	}
 }
 
 func runLoop(t *testing.T, cfg Config, runner *fakeRunner, plane *fakePlane, timeout time.Duration) error {
@@ -274,8 +282,12 @@ func TestLoopCompletesClaim(t *testing.T) {
 	var envelope struct {
 		ProtocolVersion string `json:"protocol_version"`
 		Claim           struct {
-			ComponentID string `json:"component_id"`
-			WorkItemID  string `json:"work_item_id"`
+			ComponentID  string `json:"component_id"`
+			WorkItemID   string `json:"work_item_id"`
+			FencingToken string `json:"fencing_token"`
+			Scope        struct {
+				ID string `json:"id"`
+			} `json:"scope"`
 		} `json:"claim"`
 	}
 	if err := json.Unmarshal(runner.contracts[0], &envelope); err != nil {
@@ -283,6 +295,9 @@ func TestLoopCompletesClaim(t *testing.T) {
 	}
 	if envelope.ProtocolVersion == "" || envelope.Claim.ComponentID != "test-producer" || envelope.Claim.WorkItemID != "l1" {
 		t.Errorf("contract = %+v, want the extension request shape", envelope)
+	}
+	if envelope.Claim.FencingToken != "1193046" || envelope.Claim.Scope.ID != "scope-1" {
+		t.Errorf("contract = %+v, want the fenced epoch of a grantable lease", envelope)
 	}
 }
 

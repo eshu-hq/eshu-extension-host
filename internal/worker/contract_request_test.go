@@ -7,6 +7,7 @@ package worker
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/eshu-hq/eshu-extension-host/internal/cutovercontract"
@@ -22,8 +23,10 @@ import (
 func TestContractForRendersExtensionRequest(t *testing.T) {
 	cfg := testConfig()
 	lease := cutovercontract.Lease{
-		ClaimID: "c1", LeaseID: "w1", FencingToken: 9,
+		ClaimID: "c1", LeaseID: "w1", FencingToken: 1193046,
 		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
+		TenantID: "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
+		PolicyRevisionHash: "p-1",
 	}
 	raw := contractFor(cfg, lease)
 	var req struct {
@@ -56,7 +59,7 @@ func TestContractForRendersExtensionRequest(t *testing.T) {
 	str(req.Claim, "source_run_id", "sr-1")
 	str(req.Claim, "generation_id", "gen-1")
 	str(req.Claim, "work_item_id", "w1")
-	str(req.Claim, "fencing_token", "9")
+	str(req.Claim, "fencing_token", "1193046")
 	var scope struct {
 		ID string `json:"id"`
 	}
@@ -71,5 +74,33 @@ func TestContractForRendersExtensionRequest(t *testing.T) {
 		if _, ok := flat[key]; ok {
 			t.Errorf("contract %s carries flat envelope field %q the artifact rejects", raw, key)
 		}
+	}
+}
+
+// TestContractForMatchesGolden pins the exact wire bytes the child
+// reads: any schema drift — renamed field, dropped epoch, reverted
+// flat envelope — breaks this test before it can reach the live
+// window. The golden is the artifact-facing proof the request shape
+// holds byte-for-byte, not only field-by-field.
+func TestContractForMatchesGolden(t *testing.T) {
+	lease := cutovercontract.Lease{
+		ClaimID: "c1", LeaseID: "w1", FencingToken: 1193046,
+		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
+		TenantID: "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
+		PolicyRevisionHash: "p-1",
+	}
+	raw := contractFor(testConfig(), lease)
+	const golden = "testdata/child-request.json"
+	if os.Getenv("UPDATE_GOLDEN") != "" {
+		if err := os.WriteFile(golden, append(raw, '\n'), 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(raw)+"\n" != string(want) {
+		t.Errorf("contract bytes differ from %s:\n got: %s\nwant: %s", golden, raw, want)
 	}
 }

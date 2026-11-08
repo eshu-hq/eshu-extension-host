@@ -28,12 +28,16 @@ const testClaimTimeout = 2 * time.Second
 // token and the planned identity the commit matches the pin against.
 func fencedLease() cutovercontract.Lease {
 	return cutovercontract.Lease{
-		ClaimID:      "c1",
-		LeaseID:      "l1",
-		FencingToken: 7,
-		ScopeID:      "scope-1",
-		SourceRunID:  "sr-1",
-		GenerationID: "gen-1",
+		ClaimID:            "c1",
+		LeaseID:            "l1",
+		FencingToken:       1193046,
+		ScopeID:            "scope-1",
+		SourceRunID:        "sr-1",
+		GenerationID:       "gen-1",
+		TenantID:           "t-1",
+		WorkspaceID:        "w-1",
+		SubjectClass:       "s-1",
+		PolicyRevisionHash: "p-1",
 	}
 }
 
