@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +45,10 @@ type childRequest struct {
 
 // childClaim is the claimed-epoch half of the child request. SourceSystem
 // forwards the planned source system: the satellite door requires the echo,
-// and the in-tree host sends the planned value, never a guess.
+// and the in-tree host sends the planned value, never a guess. Attempt,
+// Deadline, and ConfigHandle ride for the same reason: the door requires
+// attempt >= 1, a non-zero deadline, and a config handle on the echo,
+// and the child artifact echoes this claim verbatim onto its result.
 type childClaim struct {
 	ComponentID   string     `json:"component_id"`
 	InstanceID    string     `json:"instance_id"`
@@ -55,6 +59,9 @@ type childClaim struct {
 	GenerationID  string     `json:"generation_id"`
 	WorkItemID    string     `json:"work_item_id"`
 	FencingToken  string     `json:"fencing_token"`
+	Attempt       int        `json:"attempt"`
+	Deadline      time.Time  `json:"deadline"`
+	ConfigHandle  string     `json:"config_handle"`
 }
 
 // childScope names the claimed scope.
@@ -116,6 +123,9 @@ func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane 
 	}
 	if strings.TrimSpace(cfg.ScopeKind) == "" {
 		return errors.New("worker: scope kind is required")
+	}
+	if strings.TrimSpace(cfg.ConfigHandle) == "" {
+		return errors.New("worker: config handle is required")
 	}
 	if cfg.PollInterval <= 0 {
 		return errors.New("worker: poll interval must be positive")
@@ -204,33 +214,47 @@ func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, pl
 		return
 	}
 	if runErr != nil {
-		failClaim(ctx, plane, lease, runErr)
+		failClaim(ctx, plane, lease, runErr, cfg.Logger)
 		return
 	}
 	if err := plane.CommitClaimFacts(ctx, lease, result); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		failClaim(ctx, plane, lease, err)
+		failClaim(ctx, plane, lease, err, cfg.Logger)
 		return
 	}
 	if err := plane.Complete(ctx, lease, result); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		failClaim(ctx, plane, lease, err)
+		failClaim(ctx, plane, lease, err, cfg.Logger)
 	}
 }
 
 // failClaim reports a failed claim: a grant denial fails terminal, any
 // other failure fails retryable and releases the hold for re-claim.
-func failClaim(ctx context.Context, plane cutovercontract.ClaimPlane, lease cutovercontract.Lease, cause error) {
+// The cause is logged with the claim id when the host wired a logger:
+// the plane outcome rows carry no cause text, so without this line the
+// next door refusal is as blind as the attempt/deadline/handle refusals
+// were. A nil logger stays silent.
+func failClaim(ctx context.Context, plane cutovercontract.ClaimPlane, lease cutovercontract.Lease, cause error, log *slog.Logger) {
+	outcome := "retryable"
 	if errors.Is(cause, cutovercontract.ErrGrantDenied) {
+		outcome = "terminal"
 		_ = plane.FailTerminal(ctx, lease)
-		return
+	} else {
+		_ = plane.FailRetryable(ctx, lease)
+		_ = plane.Release(ctx, lease)
 	}
-	_ = plane.FailRetryable(ctx, lease)
-	_ = plane.Release(ctx, lease)
+	if log != nil {
+		log.Error("claim failed",
+			"event_name", "runtime.claim.failed",
+			"claim_id", lease.ClaimID,
+			"outcome", outcome,
+			"error", cause,
+		)
+	}
 }
 
 // heartbeatLoop renews the held lease until done closes or ctx ends. A
@@ -270,6 +294,9 @@ func contractFor(cfg Config, lease cutovercontract.Lease) []byte {
 			GenerationID:  lease.GenerationID,
 			WorkItemID:    lease.LeaseID,
 			FencingToken:  strconv.FormatInt(lease.FencingToken, 10),
+			Attempt:       lease.Attempt,
+			Deadline:      lease.Deadline,
+			ConfigHandle:  cfg.ConfigHandle,
 		},
 		Contract: childContract{
 			ProtocolVersion: extensionProtocolVersion,

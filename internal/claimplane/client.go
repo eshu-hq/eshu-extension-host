@@ -194,23 +194,31 @@ type claimGrant struct {
 // claimWorkItem carries the granted work item id, the planned identity
 // core matches the commit pin against, and the tenant boundary the
 // commit re-checks before persisting, and the planned source system
-// the satellite door requires on the commit echo.
+// the satellite door requires on the commit echo. AttemptCount is the
+// spec attempt count the plane increments when it issues the claim;
+// the door requires the echo at attempt >= 1. LeaseExpiresAt rides
+// newer planes; older planes omit it and the client derives the hold
+// end from the requested TTL instead.
 type claimWorkItem struct {
-	WorkItemID         string `json:"work_item_id"`
-	ScopeID            string `json:"scope_id"`
-	SourceRunID        string `json:"source_run_id"`
-	GenerationID       string `json:"generation_id"`
-	SourceSystem       string `json:"source_system"`
-	TenantID           string `json:"tenant_id,omitempty"`
-	WorkspaceID        string `json:"workspace_id,omitempty"`
-	SubjectClass       string `json:"subject_class,omitempty"`
-	PolicyRevisionHash string `json:"policy_revision_hash,omitempty"`
+	WorkItemID         string    `json:"work_item_id"`
+	ScopeID            string    `json:"scope_id"`
+	SourceRunID        string    `json:"source_run_id"`
+	GenerationID       string    `json:"generation_id"`
+	SourceSystem       string    `json:"source_system"`
+	AttemptCount       int       `json:"attempt_count"`
+	LeaseExpiresAt     time.Time `json:"lease_expires_at,omitempty"`
+	TenantID           string    `json:"tenant_id,omitempty"`
+	WorkspaceID        string    `json:"workspace_id,omitempty"`
+	SubjectClass       string    `json:"subject_class,omitempty"`
+	PolicyRevisionHash string    `json:"policy_revision_hash,omitempty"`
 }
 
-// claimRef carries the granted claim id and its fencing token.
+// claimRef carries the granted claim id, its fencing token, and the
+// lease expiry newer planes stamp on the claim half.
 type claimRef struct {
-	ClaimID      string `json:"claim_id"`
-	FencingToken int64  `json:"fencing_token"`
+	ClaimID        string    `json:"claim_id"`
+	FencingToken   int64     `json:"fencing_token"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at,omitempty"`
 }
 
 // claimDeferral is the spec ClaimPacingDeferral read-subset
@@ -321,6 +329,13 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 		strings.TrimSpace(item.GenerationID) == "" {
 		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without planned ids")
 	}
+	// The door requires the child echo at attempt >= 1 with a non-zero
+	// deadline. A grant without a usable attempt can never commit, so
+	// it fails closed here and the loop re-polls for a fresh grant
+	// instead of burning a child run at the door.
+	if item.AttemptCount < 1 {
+		return cutovercontract.Lease{}, false, c.callErrorText("ClaimNext", CodeInvalid, "issued claim without a usable attempt count")
+	}
 	return cutovercontract.Lease{
 		ClaimID:            resp.Grant.Claim.ClaimID,
 		LeaseID:            item.WorkItemID,
@@ -329,11 +344,31 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 		SourceRunID:        item.SourceRunID,
 		GenerationID:       item.GenerationID,
 		SourceSystem:       item.SourceSystem,
+		Attempt:            item.AttemptCount,
+		Deadline:           claimDeadline(wire, item, resp.Grant.Claim),
 		TenantID:           item.TenantID,
 		WorkspaceID:        item.WorkspaceID,
 		SubjectClass:       item.SubjectClass,
 		PolicyRevisionHash: item.PolicyRevisionHash,
 	}, true, nil
+}
+
+// claimDeadline resolves the hold end the child echo must carry. It
+// prefers the granted lease expiry — the work-item half first, exactly
+// like the in-tree host deadlines its child claims, then the claim
+// half newer planes stamp. Older planes send neither, so it derives
+// the requested hold from the stamped wire request: the claim time the
+// client already sent plus the requested TTL. The request is the
+// wire-stamped copy, never the caller's original, so the derivation
+// honors the injected Clock and takes no second wall-clock read.
+func claimDeadline(wire cutovercontract.ClaimRequest, item claimWorkItem, claim claimRef) time.Time {
+	if !item.LeaseExpiresAt.IsZero() {
+		return item.LeaseExpiresAt.UTC()
+	}
+	if !claim.LeaseExpiresAt.IsZero() {
+		return claim.LeaseExpiresAt.UTC()
+	}
+	return wire.ObservedAt.Add(wire.LeaseTTL).UTC()
 }
 
 // scopeDeclared reports whether scope is one of the declared collector

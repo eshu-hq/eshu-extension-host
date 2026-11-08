@@ -57,9 +57,12 @@ type Runner interface {
 // The commit lane carries the fenced epoch with it: FencingToken is the
 // spec claim fencing token, ScopeID/SourceRunID/GenerationID are the
 // planned identity core matches the commit pin against, SourceSystem is
-// the planned source the satellite door requires on the echo, and the
-// tenant fields re-check the active grant before core persists source
-// facts — all copied from the granted work item and claim at claim time.
+// the planned source the satellite door requires on the echo, Attempt
+// is the granted attempt count and Deadline the hold end the child
+// child echo must carry (the door requires attempt >= 1 and a non-zero
+// deadline), and the tenant fields re-check the active grant
+// before core persists source facts — all copied from the granted work
+// item and claim at claim time.
 type Lease struct {
 	ClaimID            string
 	LeaseID            string
@@ -68,6 +71,8 @@ type Lease struct {
 	SourceRunID        string
 	GenerationID       string
 	SourceSystem       string
+	Attempt            int
+	Deadline           time.Time
 	TenantID           string
 	WorkspaceID        string
 	SubjectClass       string

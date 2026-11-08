@@ -19,6 +19,7 @@ func requiredEnv() map[string]string {
 		"ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID":      "test-producer",
 		"ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION": "v0.1.0",
 		"ESHU_COMPONENT_COLLECTOR_INSTANCE_ID":        "test-instance",
+		"ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE":      "rehearsal:test",
 		"ESHU_WORKFLOW_CLAIM_PLANE_URL":               "https://plane.internal",
 	}
 }

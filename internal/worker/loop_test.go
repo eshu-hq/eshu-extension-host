@@ -129,6 +129,7 @@ func testConfig() Config {
 		CollectorInstanceID: "test-instance",
 		Scopes:              "component",
 		ScopeKind:           "scope-kind-1",
+		ConfigHandle:        "rehearsal:test",
 		ClaimPlaneURL:       "https://plane.internal",
 		PollInterval:        time.Millisecond,
 		LeaseTTL:            60 * time.Second,
@@ -137,13 +138,16 @@ func testConfig() Config {
 }
 
 // testLease is a complete grant: the fenced epoch, the planned identity
-// the commit matches the pin against, and the tenant grant the commit
-// re-checks before core persists source facts.
+// the commit matches the pin against, the attempt and deadline the door
+// requires on the child echo, and the tenant grant the commit re-checks
+// before core persists source facts.
 func testLease() cutovercontract.Lease {
 	return cutovercontract.Lease{
 		ClaimID: "c1", LeaseID: "l1", FencingToken: 1193046,
 		ScopeID: "scope-1", SourceRunID: "sr-1", GenerationID: "gen-1",
 		SourceSystem: "src-1",
+		Attempt:      41,
+		Deadline:     time.Date(2026, 11, 8, 21, 0, 0, 0, time.UTC),
 		TenantID:     "t-1", WorkspaceID: "w-1", SubjectClass: "s-1",
 		PolicyRevisionHash: "p-1",
 	}
