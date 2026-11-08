@@ -41,8 +41,14 @@ func TestContractForRendersExtensionRequest(t *testing.T) {
 			t.Errorf("contract %s: %s = %s, want %q", raw, key, m[key], want)
 		}
 	}
-	if req.ProtocolVersion == "" || len(req.Contract) == 0 {
-		t.Errorf("contract %s misses protocol versions", raw)
+	if req.ProtocolVersion != "collector-sdk/v1alpha1" {
+		t.Errorf("contract %s: protocol_version = %q, want the single-call contract the saver commits", raw, req.ProtocolVersion)
+	}
+	var contract struct {
+		ProtocolVersion string `json:"protocol_version"`
+	}
+	if err := json.Unmarshal(req.Contract["protocol_version"], &contract.ProtocolVersion); err != nil || contract.ProtocolVersion != "collector-sdk/v1alpha1" {
+		t.Errorf("contract %s: contract.protocol_version = %s, want the single-call contract", raw, req.Contract["protocol_version"])
 	}
 	str(req.Claim, "component_id", "test-producer")
 	str(req.Claim, "instance_id", "test-instance")
