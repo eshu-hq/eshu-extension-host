@@ -67,6 +67,9 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	if cfg.Scopes != "component" {
 		t.Errorf("Scopes = %q, want in-tree default %q", cfg.Scopes, "component")
 	}
+	if cfg.ScopeKind != "component" {
+		t.Errorf("ScopeKind = %q, want the single-env coupling %q", cfg.ScopeKind, "component")
+	}
 	if cfg.PollInterval != time.Second {
 		t.Errorf("PollInterval = %v, want in-tree default 1s", cfg.PollInterval)
 	}
@@ -89,6 +92,9 @@ func TestConfigFromEnvParsesOverrides(t *testing.T) {
 	}
 	if cfg.Scopes != "scanner" {
 		t.Errorf("Scopes = %q, want scanner", cfg.Scopes)
+	}
+	if cfg.ScopeKind != "scanner" {
+		t.Errorf("ScopeKind = %q, want the single-env coupling %q", cfg.ScopeKind, "scanner")
 	}
 	if cfg.PollInterval != 5*time.Second {
 		t.Errorf("PollInterval = %v, want 5s", cfg.PollInterval)

@@ -128,6 +128,7 @@ func testConfig() Config {
 		ProducerVersion:     "v0.1.0",
 		CollectorInstanceID: "test-instance",
 		Scopes:              "component",
+		ScopeKind:           "scope-kind-1",
 		ClaimPlaneURL:       "https://plane.internal",
 		PollInterval:        time.Millisecond,
 		LeaseTTL:            60 * time.Second,
@@ -193,6 +194,11 @@ func TestLoopRejectsNilCollaborators(t *testing.T) {
 	bad.CollectorInstanceID = ""
 	if err := Loop(context.Background(), bad, runner, plane); err == nil {
 		t.Error("empty instance id: got nil error, want fail-closed")
+	}
+	bad = cfg
+	bad.ScopeKind = "  "
+	if err := Loop(context.Background(), bad, runner, plane); err == nil {
+		t.Error("blank scope kind: got nil error, want fail-closed (door requires the echo)")
 	}
 }
 
