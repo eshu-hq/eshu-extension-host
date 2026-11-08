@@ -193,12 +193,14 @@ type claimGrant struct {
 
 // claimWorkItem carries the granted work item id, the planned identity
 // core matches the commit pin against, and the tenant boundary the
-// commit re-checks before persisting.
+// commit re-checks before persisting, and the planned source system
+// the satellite door requires on the commit echo.
 type claimWorkItem struct {
 	WorkItemID         string `json:"work_item_id"`
 	ScopeID            string `json:"scope_id"`
 	SourceRunID        string `json:"source_run_id"`
 	GenerationID       string `json:"generation_id"`
+	SourceSystem       string `json:"source_system"`
 	TenantID           string `json:"tenant_id,omitempty"`
 	WorkspaceID        string `json:"workspace_id,omitempty"`
 	SubjectClass       string `json:"subject_class,omitempty"`
@@ -326,6 +328,7 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 		ScopeID:            item.ScopeID,
 		SourceRunID:        item.SourceRunID,
 		GenerationID:       item.GenerationID,
+		SourceSystem:       item.SourceSystem,
 		TenantID:           item.TenantID,
 		WorkspaceID:        item.WorkspaceID,
 		SubjectClass:       item.SubjectClass,

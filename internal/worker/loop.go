@@ -42,11 +42,14 @@ type childRequest struct {
 	Contract        childContract `json:"contract"`
 }
 
-// childClaim is the claimed-epoch half of the child request.
+// childClaim is the claimed-epoch half of the child request. SourceSystem
+// forwards the planned source system: the satellite door requires the echo,
+// and the in-tree host sends the planned value, never a guess.
 type childClaim struct {
 	ComponentID   string     `json:"component_id"`
 	InstanceID    string     `json:"instance_id"`
 	CollectorKind string     `json:"collector_kind"`
+	SourceSystem  string     `json:"source_system"`
 	Scope         childScope `json:"scope"`
 	SourceRunID   string     `json:"source_run_id"`
 	GenerationID  string     `json:"generation_id"`
@@ -133,6 +136,14 @@ func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane 
 			if !wait(ctx, cfg.PollInterval) {
 				return nil
 			}
+			continue
+		}
+		// A grant without a planned source system can never commit: the
+		// satellite door requires the echo, so launching the child only
+		// burns the hold. Fail terminal before any child launch, never
+		// retryable — a re-claim returns the same grant.
+		if strings.TrimSpace(lease.SourceSystem) == "" {
+			_ = plane.FailTerminal(ctx, lease)
 			continue
 		}
 		serveOne(ctx, cfg, runner, plane, lease)
@@ -248,6 +259,7 @@ func contractFor(cfg Config, lease cutovercontract.Lease) []byte {
 			ComponentID:   cfg.ProducerID,
 			InstanceID:    cfg.CollectorInstanceID,
 			CollectorKind: cfg.Scopes,
+			SourceSystem:  lease.SourceSystem,
 			Scope:         childScope{ID: lease.ScopeID},
 			SourceRunID:   lease.SourceRunID,
 			GenerationID:  lease.GenerationID,
