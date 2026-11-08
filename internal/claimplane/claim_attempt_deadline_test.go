@@ -102,7 +102,9 @@ func TestClaimNextPrefersWorkItemExpiry(t *testing.T) {
 // TestClaimNextDerivesDeadlineWhenGrantOmitsExpiry proves an older
 // plane grant without lease-expiry fields still yields a usable
 // deadline: the worker requested the hold, so the hold end is the
-// claim time plus the requested TTL.
+// stamped claim time plus the requested TTL. The test client injects
+// a frozen clock, so the derivation is exact, never a wall-clock
+// window.
 func TestClaimNextDerivesDeadlineWhenGrantOmitsExpiry(t *testing.T) {
 	stub := &stubPlane{bodies: map[string]stubResponse{
 		"/workflow.v1/ClaimNext": {status: 200, body: specGrantBody("l1", "c1")},
@@ -111,18 +113,15 @@ func TestClaimNextDerivesDeadlineWhenGrantOmitsExpiry(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL)
-	req := testClaimRequest()
-	before := time.Now().UTC()
-	lease, found, err := c.ClaimNext(context.Background(), req)
+	lease, found, err := c.ClaimNext(context.Background(), testClaimRequest())
 	if err != nil || !found {
 		t.Fatalf("ClaimNext = %v,%v, want found lease", lease, err)
 	}
-	if lease.Attempt < 1 {
-		t.Errorf("lease.Attempt = %d, want >= 1 even without the granted count", lease.Attempt)
+	if lease.Attempt != 3 {
+		t.Errorf("lease.Attempt = %d, want the granted 3", lease.Attempt)
 	}
-	lower := before.Add(req.LeaseTTL).Add(-time.Minute)
-	upper := time.Now().UTC().Add(req.LeaseTTL).Add(time.Minute)
-	if lease.Deadline.Before(lower) || lease.Deadline.After(upper) {
-		t.Errorf("lease.Deadline = %v, want about claim time plus the requested %v", lease.Deadline, req.LeaseTTL)
+	want := time.Date(2026, 11, 6, 12, 1, 0, 0, time.UTC)
+	if !lease.Deadline.Equal(want) {
+		t.Errorf("lease.Deadline = %v, want the frozen clock plus the requested minute: %v", lease.Deadline, want)
 	}
 }

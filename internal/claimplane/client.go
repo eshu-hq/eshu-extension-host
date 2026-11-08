@@ -345,7 +345,7 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 		GenerationID:       item.GenerationID,
 		SourceSystem:       item.SourceSystem,
 		Attempt:            item.AttemptCount,
-		Deadline:           claimDeadline(req, item, resp.Grant.Claim),
+		Deadline:           claimDeadline(wire, item, resp.Grant.Claim),
 		TenantID:           item.TenantID,
 		WorkspaceID:        item.WorkspaceID,
 		SubjectClass:       item.SubjectClass,
@@ -357,19 +357,18 @@ func (c *Client) ClaimNext(ctx context.Context, req cutovercontract.ClaimRequest
 // prefers the granted lease expiry — the work-item half first, exactly
 // like the in-tree host deadlines its child claims, then the claim
 // half newer planes stamp. Older planes send neither, so it derives
-// the requested hold: claim time plus the requested TTL.
-func claimDeadline(req cutovercontract.ClaimRequest, item claimWorkItem, claim claimRef) time.Time {
+// the requested hold from the stamped wire request: the claim time the
+// client already sent plus the requested TTL. The request is the
+// wire-stamped copy, never the caller's original, so the derivation
+// honors the injected Clock and takes no second wall-clock read.
+func claimDeadline(wire cutovercontract.ClaimRequest, item claimWorkItem, claim claimRef) time.Time {
 	if !item.LeaseExpiresAt.IsZero() {
 		return item.LeaseExpiresAt.UTC()
 	}
 	if !claim.LeaseExpiresAt.IsZero() {
 		return claim.LeaseExpiresAt.UTC()
 	}
-	observed := req.ObservedAt
-	if observed.IsZero() {
-		observed = time.Now().UTC()
-	}
-	return observed.Add(req.LeaseTTL).UTC()
+	return wire.ObservedAt.Add(wire.LeaseTTL).UTC()
 }
 
 // scopeDeclared reports whether scope is one of the declared collector

@@ -23,15 +23,21 @@
 //	                             ClaimNextRequest (workflowv1/claim.go:133)
 //	                   response {issued, grant: {work_item: {work_item_id,
 //	                             scope_id, source_run_id, generation_id,
-//	                             tenant_*}, claim: {claim_id,
-//	                             fencing_token}}, deferral: {signal,
+//	                             source_system, attempt_count,
+//	                             lease_expires_at, tenant_*}, claim: {claim_id,
+//	                             fencing_token, lease_expires_at}},
+//	                             deferral: {signal,
 //	                             retry_after_ns}} — the spec ClaimNextResponse
 //	                             read-subset (workflowv1/claim.go:154,
 //	                             pacing.go:203); a full server grant with
 //	                   extra fields decodes, the pre-conformance flat shape
 //	                   fails closed on the missing grant half; a grant
-//	                   without a fencing token or planned ids fails
-//	                   closed — it could never commit
+//	                   without a fencing token, planned ids, or a usable
+//	                   attempt count (attempt >= 1, the door requires the
+//	                   echo there) fails closed — it could never commit.
+//	                   The deadline rides the granted lease expiry where
+//	                   the plane sends one, else the stamped claim time
+//	                   plus the requested TTL.
 //	                   empty queue: 404 with code "not_found" -> found=false, nil error
 //	                   unissued 200 always carries the deferral; a deferral-less
 //	                   unissued answer is invalid, never paced
