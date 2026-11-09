@@ -1,78 +1,92 @@
 # eshu-extension-host
 
-Eshu extension host trust and bounded execution. Pre-release: holds no cutover authority until its reviewed cutover. Refs #8877, part of #6707.
+Status: pre-release. It doesn't replace the host that runs inside
+Eshu core yet, and by default it does no collection work at all.
 
-> Dark posture (default): this binary serves operator health only.
-> It never opens Postgres, never dials a claim plane, and never claims
-> work unless explicitly enabled (Leaf 8 wire-up, host#10). The enabled
-> flow stays behind #9376 -> #9381.
+Here's what it is: some Eshu collectors ship as separate one-shot
+programs that read one request, write one result, and exit. They
+don't poll for work. This host does that part for them. It asks Eshu
+for the next job, starts the collector program, keeps the job's
+lease alive while it runs, and sends the result back.
 
-## Build and test
-
-```bash
-make ci      # lint + test + race (with the coverage floor); CI stays authoritative
-make lint    # vet, golangci-lint, gofumpt, tidy, 500-line cap
-make test    # build + full test suite
-make race    # race suite + coverprofile + coverage floor (90.0, may only rise)
+```mermaid
+flowchart LR
+  CP[Eshu claim plane] -->|next claim| H[extension-host<br/>this repo]
+  H -->|one JSON request on stdin| COL[Collector program<br/>child process]
+  COL -->|one JSON result on stdout| H
+  H -->|commit result, then complete| CP
 ```
 
-Needs `golangci-lint` and `actionlint` on `PATH`; CI pins its own copies
-(see CONTRIBUTING.md).
+In words: the host claims work, runs one collector per claim over
+standard input and output, heartbeats while it runs, then commits
+the result and completes the claim. But only when you turn claiming
+on. A plain start serves health and metrics and touches nothing.
 
-## Run the dark binary
+## When you'd use it, and when you wouldn't
+
+Use it when a deployment needs to run a component collector as a
+separate program under this standalone host, with claims turned on.
+
+Skip it if you expect collection on a plain start (you won't get
+any), if you need a collector itself (there's no collector logic
+here, just the supervisor), or if you need stored state. The host
+keeps none. Claims and results live in Eshu.
+
+## Getting it running
+
+The default posture, health only:
 
 ```bash
 go run ./cmd/extension-host --admin-listen=:8082
-curl http://127.0.0.1:8082/healthz   # {"status":"ok","mode":"dark","version":"dev"}
-curl http://127.0.0.1:8082/metrics   # extension_host_claims_enabled 0
+curl http://127.0.0.1:8082/healthz   # {"status":"ok","mode":"dark",...}
 ```
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--admin-listen` | `:8082` | admin listen address (health, readiness, metrics) |
-| `--version` | — | print the stamped build version and exit |
-| `--claims-enabled` | `false` | run the cutover worker loop (or `ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1`) |
-| `--dry-run` | `false` | shadow mode: live claims, compare sink, never commits (requires enablement) |
+"Dark" is this codebase's word for off. To actually claim work you
+need `--claims-enabled` (or `ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1`)
+plus the environment in the configuration doc, including the path of
+the collector binary to run. `--dry-run` rehearses the enabled flow
+without committing results.
 
-Enablement is an OR gate: `--claims-enabled` or
-`ESHU_EXTENSIONHOST_CUTOVER_ENABLED=1` (exactly `1`; anything else
-fail-closes naming the variable) enables, and `--claims-enabled=false`
-does not override an enabled env. `--dry-run` without enablement is a
-startup error (exit 2). The enabled path also requires
-`ESHU_EXTENSIONHOST_COLLECTOR_PATH` and `ESHU_COMPONENT_COLLECTOR_INSTANCE_ID`;
-every construction error names the variable, never the value.
-`ESHU_COMPONENT_COLLECTOR_INSTANCE_ID` is the plane's `(kind, instance)`
-match key carried on every `ClaimNext`: it is required and never derived
-from `ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_ID`, so a producer whose id
-differs from the instance id still claims.
+## Documentation
 
-## Operator signals
+| Doc | What's in it |
+|---|---|
+| [docs/README.md](docs/README.md) | Documentation index: start here |
+| [docs/getting-started/README.md](docs/getting-started/README.md) | Run health-only, then learn what claiming takes |
+| [docs/guides/](docs/guides/README.md) | Operate, troubleshoot, collector placement, and release |
+| [docs/concepts/](docs/concepts/README.md) | The claim contract and boundaries |
+| [docs/reference/configuration.md](docs/reference/configuration.md) | Flags, the enabled-mode environment, and the cutover gate |
+| [docs/architecture/README.md](docs/architecture/README.md) | Where the host sits in Eshu |
+| [docs/diagrams/README.md](docs/diagrams/README.md) | Every diagram, with captions and text versions |
+| [docs/decisions/README.md](docs/decisions/README.md) | Architecture decision records |
+| [docs/contributing/README.md](docs/contributing/README.md) | Local gates before a pull request |
+| [PROVENANCE.md](PROVENANCE.md) | Source pin, release, and rollback notes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Local gates and CI lanes |
 
-- `GET /healthz` — `{"status":"ok","mode":"dark|enabled","claims_enabled":0|1,"version":"<stamp>"}`.
-- `GET /readyz` — serving readiness (no dependencies, so ready = serving).
-- `GET /metrics` — `extension_host_build_info`, `extension_host_uptime_seconds`,
-  and `extension_host_claims_enabled 0` (zero claim flow, observably).
-- Structured JSON logs on stderr: startup posture
-  (`event_name=runtime.startup.ready`, `mode=dark`, `claims_enabled=false`)
-  and serve failures (`event_name=runtime.serve.failed`).
+Vocabulary the docs lean on: a claim is one unit of collector work
+handed out by Eshu, a lease is its time limit, a heartbeat extends
+that limit, and the claim plane is the Eshu HTTP service handing
+claims out. This host is a client of it.
 
-## Configuration
+## Related repos
 
-No credentials, no volumes. The dark image starts with no env at all;
-unknown flags fail closed at parse time. The enabled path reads
-`ESHU_EXTENSIONHOST_CUTOVER_ENABLED`, `ESHU_EXTENSIONHOST_COLLECTOR_PATH`,
-`ESHU_COMPONENT_COLLECTOR_INSTANCE_ID`, and the rest of the
-worker/claim-plane env contract. Resource footprint: one static
-binary, read-only root filesystem compatible.
+- [eshu](https://github.com/eshu-hq/eshu): core. It runs the claim
+  plane this host polls.
+- [eshu-sdk](https://github.com/eshu-hq/eshu-sdk): the collector
+  contract. Requests sent to child collectors carry protocol version
+  `collector-sdk/v1alpha1`.
+- The component collectors (for example
+  [eshu-collector-aws-cloud](https://github.com/eshu-hq/eshu-collector-aws-cloud)):
+  the programs this host can run, one per claim.
 
-## Provenance, release, rollback
+## Development
 
-- Source pin and stub-state record: [PROVENANCE.md](PROVENANCE.md).
-- Release: tag `v[0-9]*` runs `.github/workflows/release.yml` — per-platform
-  Trivy HIGH/CRITICAL gate over every pushed arch, then multi-arch push
-  with SLSA provenance and SPDX SBOM attestations, then a GitHub Release.
-  The deploy overlay (boatsgroup#532, staged) pins the published digest,
-  never a floating tag.
-- Rollback: delete-path-suffices per the #9383 disposition (host owns zero
-  durable state); the rehearsal lives in `EXTRACTION_PREP.md` §8 of the
-  source pin and runs against the exact deployed digest.
+Go `1.26.10` (pinned in `go.mod`, no external dependencies). Run
+`make ci` for lint, tests, and the race suite with its coverage
+floor.
+
+## Contributing, security, license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull
+request. There's no SECURITY.md in this repo. The license is MIT;
+see [LICENSE](LICENSE).
