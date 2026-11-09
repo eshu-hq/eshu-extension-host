@@ -31,7 +31,10 @@ and the one-claim sequence, with captions and text versions.
 5. Commit the result bytes unchanged, then complete the
    claim. If the run or commit fails, the claim is failed as
    retryable, or terminal when the error says the producer
-   grant was denied. A producer grant is Eshu's permission
+   grant was denied or the plane terminally refused the
+   result carrier (a 4xx code invalid refusal, e.g. a
+   non-complete result state; a 5xx stays retryable). A
+   producer grant is Eshu's permission
    record saying a named producer may emit a named fact kind.
    In dry-run mode the host logs byte count and hash and
    commits nothing.

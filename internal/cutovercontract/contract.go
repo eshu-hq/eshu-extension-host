@@ -43,6 +43,16 @@ var ErrTruncated = errors.New("cutovercontract: adapter output truncated")
 // ErrGrantDenied reports a refused producer grant at admission.
 var ErrGrantDenied = errors.New("cutovercontract: grant denied")
 
+// ErrTerminalCarrier reports a result carrier the plane terminally
+// refuses: the core identity gate rejects every non-complete result
+// state with code invalid (e.g. a terminal-state result that is not
+// complete), so retrying the same carrier can never succeed. The
+// claim-plane client wraps this sentinel around the refusal; the worker
+// fails the claim terminal on it, the way it does on a grant denial.
+// Transport losses and server failures carry other codes and stay
+// retryable.
+var ErrTerminalCarrier = errors.New("cutovercontract: terminal carrier refused")
+
 // Runner executes one collector call: it writes contractJSON to the
 // child stdin, reads bounded stdout, strict-decodes the result, and
 // redacts secrets from any returned error.
