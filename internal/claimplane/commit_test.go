@@ -313,3 +313,43 @@ func TestCommitClaimFactsLeaseDuration(t *testing.T) {
 		t.Fatalf("lease_duration_ns = %s, want the configured hold 90000000000", obj["lease_duration_ns"])
 	}
 }
+
+func TestCommitClaimFactsTerminalCarrierRefusal(t *testing.T) {
+	// Live replay (ops-qa 2026-11-09, issue #22): the plane refuses a
+	// terminal-state carrier with code invalid — the core identity gate
+	// rejects every non-complete result state, so retrying the same
+	// carrier can never succeed. The client must surface the seam
+	// terminal-carrier sentinel while keeping the CallError taxonomy.
+	refused := &commitStub{resp: stubResponse{status: 400, body: `{"code":"invalid","message":"invalid carrier: commit claim facts: result state \"terminal\" is not complete"}`}}
+	srv := httptest.NewServer(refused.handler())
+	defer srv.Close()
+	c := newTestClient(t, srv.URL)
+	err := c.CommitClaimFacts(context.Background(), commitLease(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("commit refused carrier = nil, want an error")
+	}
+	if !errors.Is(err, cutovercontract.ErrTerminalCarrier) {
+		t.Errorf("commit refused carrier = %v, want the terminal-carrier sentinel", err)
+	}
+	var call *CallError
+	if !errors.As(err, &call) || call.Op != "CommitClaimFacts" || call.Code != CodeInvalid {
+		t.Errorf("commit refused carrier = %v, want op/CommitClaimFacts code/invalid", err)
+	}
+	if !strings.Contains(err.Error(), `result state "terminal" is not complete`) {
+		t.Errorf("commit refused carrier = %v, want the observed refusal text", err)
+	}
+
+	// A 5xx the plane did not judge invalid carries no sentinel: the
+	// wire failed, not the carrier.
+	failed := &commitStub{resp: stubResponse{status: 500, body: `{"code":"unexpected_status","message":"boom"}`}}
+	srv2 := httptest.NewServer(failed.handler())
+	defer srv2.Close()
+	c2 := newTestClient(t, srv2.URL)
+	err = c2.CommitClaimFacts(context.Background(), commitLease(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("commit 500 = nil, want an error")
+	}
+	if errors.Is(err, cutovercontract.ErrTerminalCarrier) {
+		t.Errorf("commit 500 = %v, want no terminal-carrier sentinel on a server failure", err)
+	}
+}

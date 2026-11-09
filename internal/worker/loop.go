@@ -99,7 +99,8 @@ type childContract struct {
 // classifier without ever completing, so only the commit ack moves the
 // epoch. A grant denial — any error wrapping
 // cutovercontract.ErrGrantDenied, from the run, the commit, or the
-// complete — fails the claim terminal. Outcome calls are best-effort:
+// complete — fails the claim terminal, as does a terminally refused
+// carrier wrapping cutovercontract.ErrTerminalCarrier. Outcome calls are best-effort:
 // their errors never stop the loop. A cancelled context skips outcome
 // calls and returns, leaving the held lease to plane-side expiry.
 func Loop(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane cutovercontract.ClaimPlane) error {
@@ -203,7 +204,8 @@ func newClaimID() string {
 // both. Only the {"ok":true} commit ack proceeds to Complete; every
 // commit failure fails per the existing retry classifier without ever
 // completing, so a 409-class refusal, a transport loss, or a 5xx never
-// moves the epoch. Cancellation abandons the outcome calls; the held
+// moves the epoch — while a terminally refused carrier fails terminal
+// instead of retrying. Cancellation abandons the outcome calls; the held
 // lease expires plane-side.
 func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, plane cutovercontract.ClaimPlane, lease cutovercontract.Lease) {
 	done := make(chan struct{})
@@ -232,15 +234,20 @@ func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, pl
 	}
 }
 
-// failClaim reports a failed claim: a grant denial fails terminal, any
-// other failure fails retryable and releases the hold for re-claim.
+// failClaim reports a failed claim: a grant denial or a terminally
+// refused carrier fails terminal, any other failure fails retryable and
+// releases the hold for re-claim. A refused carrier (e.g. the plane
+// rejecting a terminal-state result that is not complete) can never
+// succeed on retry, so it ends in the bounded terminal state instead of
+// spinning the claim loop; transport losses and server failures keep
+// the retryable path.
 // The cause is logged with the claim id when the host wired a logger:
 // the plane outcome rows carry no cause text, so without this line the
 // next door refusal is as blind as the attempt/deadline/handle refusals
 // were. A nil logger stays silent.
 func failClaim(ctx context.Context, plane cutovercontract.ClaimPlane, lease cutovercontract.Lease, cause error, log *slog.Logger) {
 	outcome := "retryable"
-	if errors.Is(cause, cutovercontract.ErrGrantDenied) {
+	if errors.Is(cause, cutovercontract.ErrGrantDenied) || errors.Is(cause, cutovercontract.ErrTerminalCarrier) {
 		outcome = "terminal"
 		_ = plane.FailTerminal(ctx, lease)
 	} else {

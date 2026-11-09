@@ -137,6 +137,60 @@ func TestLoopNoCompleteOnCommitConflict(t *testing.T) {
 	}
 }
 
+func TestLoopTerminalOnTerminalCarrierRefusal(t *testing.T) {
+	// Live replay (issue #22): the plane terminally refuses the carrier
+	// the way the client surfaces it — the seam sentinel chained with
+	// the CommitClaimFacts/invalid CallError (the claimplane test pins
+	// the client-side shape; this test pins the outcome). One attempt
+	// must reach a bounded terminal state: FailTerminal with no
+	// Complete, no retryable fail, and no release back into the loop.
+	refusal := &claimplane.CallError{
+		Op: "CommitClaimFacts", Code: claimplane.CodeInvalid,
+		Message: `invalid carrier: commit claim facts: result state "terminal" is not complete`,
+	}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	plane := &fakePlane{
+		answers:   []claimAnswer{{lease: fencedLease(), found: true}},
+		commitErr: fmt.Errorf("%w: %w", refusal, cutovercontract.ErrTerminalCarrier),
+	}
+	if err := runLoop(t, testConfig(), runner, plane, testClaimTimeout); err != nil {
+		t.Fatalf("Loop: %v", err)
+	}
+	ops := opsAfterClaim(plane.ops())
+	if len(ops) < 2 || ops[0] != "CommitClaimFacts" || ops[1] != "FailTerminal" {
+		t.Errorf("ops after claim = %v, want [CommitClaimFacts FailTerminal]", ops)
+	}
+	for _, op := range ops {
+		if op == "Complete" || op == "FailRetryable" || op == "Release" {
+			t.Errorf("ops after claim = %v, want no %q after a refused carrier", ops, op)
+		}
+	}
+}
+
+func TestLoopRetryableOnCommitServerError(t *testing.T) {
+	// A 5xx the plane did not judge invalid stays retryable + released:
+	// the wire failed, not the carrier.
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	plane := &fakePlane{
+		answers: []claimAnswer{{lease: fencedLease(), found: true}},
+		commitErr: &claimplane.CallError{
+			Op: "CommitClaimFacts", Code: claimplane.CodeUnexpectedStatus, Message: "boom",
+		},
+	}
+	if err := runLoop(t, testConfig(), runner, plane, testClaimTimeout); err != nil {
+		t.Fatalf("Loop: %v", err)
+	}
+	ops := opsAfterClaim(plane.ops())
+	if len(ops) < 3 || ops[0] != "CommitClaimFacts" || ops[1] != "FailRetryable" || ops[2] != "Release" {
+		t.Errorf("ops after claim = %v, want [CommitClaimFacts FailRetryable Release]", ops)
+	}
+	for _, op := range ops {
+		if op == "Complete" || op == "FailTerminal" {
+			t.Errorf("ops after claim = %v, want no %q on a server failure", ops, op)
+		}
+	}
+}
+
 func TestLoopTerminalOnCommitGrantDeny(t *testing.T) {
 	// A commit refused on the producer grant fails terminal, like every
 	// other grant denial on the outcome path — and never completes.
