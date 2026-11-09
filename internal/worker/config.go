@@ -4,9 +4,11 @@
 package worker
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -23,6 +25,7 @@ const (
 	envInstanceID      = "ESHU_COMPONENT_COLLECTOR_INSTANCE_ID"
 	envScopeKind       = "ESHU_COMPONENT_COLLECTOR_SCOPE_KIND"
 	envConfigHandle    = "ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE"
+	envConfigPath      = "ESHU_COMPONENT_COLLECTOR_CONFIG_PATH"
 	envClaimPlaneURL   = "ESHU_WORKFLOW_CLAIM_PLANE_URL"
 	envPollInterval    = "ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL"
 	envLeaseTTL        = "ESHU_COMPONENT_COLLECTOR_CLAIM_LEASE_TTL"
@@ -69,6 +72,14 @@ type Config struct {
 	// the operator pins a rehearsal-namespaced handle here, never
 	// derived silently.
 	ConfigHandle string
+	// ExtensionConfig is the opaque extension config object rendered
+	// into each child request. It mirrors the in-tree activation
+	// config cloned per claim (eshu
+	// go/internal/collector/extensionhost): values are pinned at
+	// deploy time from the fleet worker entry (collector_instance_id
+	// plus targets), and the child artifact owns the schema, so this
+	// host never interprets it.
+	ExtensionConfig map[string]any
 	// ClaimPlaneURL is the remote plane origin (http or https).
 	ClaimPlaneURL string
 	// PollInterval paces re-claims on an empty queue or a failed
@@ -111,6 +122,10 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if configHandle == "" {
 		return Config{}, fmt.Errorf("%s is required: the door requires the echo and the rehearsal producer has no activation record to derive it from", envConfigHandle)
 	}
+	extensionConfig, err := loadExtensionConfig(strings.TrimSpace(getenv(envConfigPath)))
+	if err != nil {
+		return Config{}, err
+	}
 	planeURL := strings.TrimSpace(getenv(envClaimPlaneURL))
 	if planeURL == "" {
 		return Config{}, fmt.Errorf("%s is required: the remote client, claim store, and commit fence share one plane", envClaimPlaneURL)
@@ -136,11 +151,36 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		Scopes:              scopes,
 		ScopeKind:           scopes,
 		ConfigHandle:        configHandle,
+		ExtensionConfig:     extensionConfig,
 		ClaimPlaneURL:       planeURL,
 		PollInterval:        pollInterval,
 		LeaseTTL:            leaseTTL,
 		HeartbeatInterval:   leaseTTL / 3,
 	}, nil
+}
+
+// loadExtensionConfig reads the opaque extension config object from
+// the file the environment names. A blank variable, an unreadable
+// file, or a file that is not a JSON object fails closed: the child
+// would run blind without it, so startup refuses instead. Errors
+// name the variable only, never the path or the file bytes, which
+// may carry deploy-pinned secrets.
+func loadExtensionConfig(path string) (map[string]any, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%s is required: the child runs blind without its deploy-pinned config", envConfigPath)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s cannot be read: the extension config file is missing or unreadable", envConfigPath)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("%s is not a JSON object: the extension config file must hold one object", envConfigPath)
+	}
+	if decoded == nil {
+		return nil, fmt.Errorf("%s is not a JSON object: the extension config file must hold one object", envConfigPath)
+	}
+	return decoded, nil
 }
 
 // checkPlaneURL fails closed on a plane origin the client could not

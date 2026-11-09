@@ -41,6 +41,12 @@ type childRequest struct {
 	ProtocolVersion string        `json:"protocol_version"`
 	Claim           childClaim    `json:"claim"`
 	Contract        childContract `json:"contract"`
+	// Config is the opaque deploy-pinned extension config cloned per
+	// claim. It mirrors the in-tree extensionhost.Request config the
+	// artifact decodes (eshu go/internal/collector/extensionhost):
+	// omitempty keeps the wire byte-identical when no config is
+	// wired, and the artifact owns the schema, never this host.
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // childClaim is the claimed-epoch half of the child request. SourceSystem
@@ -284,7 +290,8 @@ func heartbeatLoop(ctx context.Context, plane cutovercontract.ClaimPlane, lease 
 
 // contractFor renders the extension request for the collector child
 // from the worker config and the granted lease: holder and instance
-// identity from config, scope/run/generation/work-item plus the decimal
+// identity plus a per-claim clone of the deploy-pinned extension
+// config from config, scope/run/generation/work-item plus the decimal
 // fencing token from the grant. The fields are strings by construction,
 // so encoding cannot fail; a failure would be a coding error and fails
 // closed with an empty object the adapter strict-decode rejects.
@@ -309,11 +316,50 @@ func contractFor(cfg Config, lease cutovercontract.Lease) []byte {
 			ProtocolVersion: extensionProtocolVersion,
 			Facts:           []any{},
 		},
+		Config: cloneExtensionConfig(cfg.ExtensionConfig),
 	})
 	if err != nil {
 		return []byte(`{}`)
 	}
 	return raw
+}
+
+// cloneExtensionConfig deep-copies the deploy-pinned config for one
+// claim. A shallow copy would share nested maps and slices across
+// claims, so one claim's render could observe another's; the clone
+// keeps every claim's request independent. A nil input stays nil so
+// omitempty drops the field and the wire stays byte-identical.
+func cloneExtensionConfig(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = cloneConfigValue(value)
+	}
+	return cloned
+}
+
+// cloneConfigValue copies one decoded JSON value. Decoded objects
+// hold only maps, slices, and scalars, so anything else passes
+// through untouched.
+func cloneConfigValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cloned := make(map[string]any, len(typed))
+		for key, item := range typed {
+			cloned[key] = cloneConfigValue(item)
+		}
+		return cloned
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneConfigValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
 }
 
 // wait sleeps d unless ctx ends first, reporting whether the sleep

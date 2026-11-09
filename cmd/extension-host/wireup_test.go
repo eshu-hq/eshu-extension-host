@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -176,6 +177,17 @@ func TestCompareSinkNeverCallsComplete(t *testing.T) {
 	}
 }
 
+// setExtensionConfigFile materializes the deploy-pinned extension
+// config for an enabled-flow test and points the worker knob at it.
+func setExtensionConfigFile(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "extension-config.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write extension config: %v", err)
+	}
+	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_PATH", path)
+}
+
 func TestEnabledConstructionErrorFailsWithoutValues(t *testing.T) {
 	secret := "bogus-value-xyz-9f8"
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_ENABLED", "")
@@ -183,6 +195,7 @@ func TestEnabledConstructionErrorFailsWithoutValues(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "test-instance")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE", "rehearsal:test")
+	setExtensionConfigFile(t, `{"collector_instance_id":"test-instance","targets":[]}`)
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", secret)
 	t.Setenv("ESHU_EXTENSIONHOST_COLLECTOR_PATH", "sh")
 	var stderr lockedBuffer
@@ -252,6 +265,7 @@ func TestSignalCancelStopsEnabledLoop(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "test-instance")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE", "rehearsal:test")
+	setExtensionConfigFile(t, `{"collector_instance_id":"test-instance","targets":[]}`)
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", plane.URL)
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "10ms")
 	t.Setenv("ESHU_EXTENSIONHOST_COLLECTOR_PATH", "sh")
@@ -365,6 +379,7 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 	t.Setenv("ESHU_EXTENSIONHOST_CUTOVER_PRODUCER_VERSION", "v0.1.0")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_INSTANCE_ID", "instance-7")
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_CONFIG_HANDLE", "rehearsal:test")
+	setExtensionConfigFile(t, `{"collector_instance_id":"instance-7","targets":[]}`)
 	t.Setenv("ESHU_WORKFLOW_CLAIM_PLANE_URL", srv.URL)
 	t.Setenv("ESHU_COMPONENT_COLLECTOR_POLL_INTERVAL", "10ms")
 
