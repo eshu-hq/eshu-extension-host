@@ -15,8 +15,10 @@ If it's enabled and still quiet:
   than one JSON value, or more than 4 MiB, fails its claim.
   So does a denied producer grant, and that one's terminal
   rather than retryable. So is a terminally refused result
-  carrier (a 4xx code invalid refusal, e.g. a non-complete
-  result state); a 5xx stays retryable.
+  carrier (a 4xx code invalid refusal, e.g. a complete-state
+  carrier refused on identity grounds); a 5xx stays retryable.
+  A non-complete result state never reaches the commit call:
+  it fails the claim as retryable first.
 - Claims not matching? The kind and instance id have to
   match what the claim plane is offering. The instance id
   comes from `ESHU_COMPONENT_COLLECTOR_INSTANCE_ID` and

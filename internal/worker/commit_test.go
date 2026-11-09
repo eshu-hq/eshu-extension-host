@@ -55,7 +55,7 @@ func commitResultCalls(plane *fakePlane, op string) []planeCall {
 }
 
 func TestLoopCommitsBeforeCompleting(t *testing.T) {
-	want := []byte(`{"facts":[{"id":"f-1"}]}`)
+	want := []byte(`{"protocol_version":"collector-sdk/v1alpha1","state":"complete","facts":[{"id":"f-1"}]}`)
 	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return want, nil }}
 	plane := &fakePlane{answers: []claimAnswer{{lease: fencedLease(), found: true}}}
 	if err := runLoop(t, testConfig(), runner, plane, testClaimTimeout); err != nil {
@@ -90,7 +90,7 @@ func TestLoopCommitsBeforeCompleting(t *testing.T) {
 func TestLoopAckGatesComplete(t *testing.T) {
 	// A failed commit never completes: the existing retry classifier
 	// absorbs the failure (retryable + release here) with no Complete.
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers:   []claimAnswer{{lease: fencedLease(), found: true}},
 		commitErr: errors.New("plane transport blew up"),
@@ -113,7 +113,7 @@ func TestLoopNoCompleteOnCommitConflict(t *testing.T) {
 	// A 409-class commit refusal (stale fence, expired lease, claim
 	// conflict) fails per the existing classifier without completing:
 	// the epoch moved, so Complete on it would be wrong.
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers: []claimAnswer{{lease: fencedLease(), found: true}},
 		commitErr: &claimplane.CallError{
@@ -138,17 +138,19 @@ func TestLoopNoCompleteOnCommitConflict(t *testing.T) {
 }
 
 func TestLoopTerminalOnTerminalCarrierRefusal(t *testing.T) {
-	// Live replay (issue #22): the plane terminally refuses the carrier
-	// the way the client surfaces it — the seam sentinel chained with
-	// the CommitClaimFacts/invalid CallError (the claimplane test pins
-	// the client-side shape; this test pins the outcome). One attempt
-	// must reach a bounded terminal state: FailTerminal with no
-	// Complete, no retryable fail, and no release back into the loop.
+	// The worker routes non-complete results before any commit call
+	// (issue #25), so this pins the defense-in-depth classifier for a
+	// complete-state carrier the plane still refuses — the seam
+	// sentinel chained with the CommitClaimFacts/invalid CallError
+	// (the claimplane test pins the client-side shape; this test pins
+	// the outcome). One attempt must reach a bounded terminal state:
+	// FailTerminal with no Complete, no retryable fail, and no release
+	// back into the loop.
 	refusal := &claimplane.CallError{
 		Op: "CommitClaimFacts", Code: claimplane.CodeInvalid,
-		Message: `invalid carrier: commit claim facts: result state "terminal" is not complete`,
+		Message: `invalid carrier: commit claim facts: echoed generation does not match the planned pin`,
 	}
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers:   []claimAnswer{{lease: fencedLease(), found: true}},
 		commitErr: fmt.Errorf("%w: %w", refusal, cutovercontract.ErrTerminalCarrier),
@@ -170,7 +172,7 @@ func TestLoopTerminalOnTerminalCarrierRefusal(t *testing.T) {
 func TestLoopRetryableOnCommitServerError(t *testing.T) {
 	// A 5xx the plane did not judge invalid stays retryable + released:
 	// the wire failed, not the carrier.
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers: []claimAnswer{{lease: fencedLease(), found: true}},
 		commitErr: &claimplane.CallError{
@@ -194,7 +196,7 @@ func TestLoopRetryableOnCommitServerError(t *testing.T) {
 func TestLoopTerminalOnCommitGrantDeny(t *testing.T) {
 	// A commit refused on the producer grant fails terminal, like every
 	// other grant denial on the outcome path — and never completes.
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers:   []claimAnswer{{lease: fencedLease(), found: true}},
 		commitErr: fmt.Errorf("grant check: %w", cutovercontract.ErrGrantDenied),

@@ -28,12 +28,15 @@ and the one-claim sequence, with captions and text versions.
 4. Read stdout with a 4 MiB cap. The output must be exactly
    one JSON value. Extra data or oversize output fails the
    claim. Child stderr is discarded.
-5. Commit the result bytes unchanged, then complete the
-   claim. If the run or commit fails, the claim is failed as
-   retryable, or terminal when the error says the producer
-   grant was denied or the plane terminally refused the
+5. When the result state is complete, commit the result bytes
+   unchanged, then complete the claim. Any other result state
+   fails the claim as retryable (FailRetryable plus Release)
+   before any commit call. If the run or commit fails, the claim
+   is failed as retryable, or terminal when the error says the
+   producer grant was denied or the plane terminally refused the
    result carrier (a 4xx code invalid refusal, e.g. a
-   non-complete result state; a 5xx stays retryable). A
+   complete-state carrier refused on identity grounds; a 5xx
+   stays retryable). A
    producer grant is Eshu's permission
    record saying a named producer may emit a named fact kind.
    In dry-run mode the host logs byte count and hash and

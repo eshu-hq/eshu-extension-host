@@ -52,9 +52,11 @@ sequenceDiagram
     C-->>H: one JSON result on stdout, then exit
     alt dry run
       H->>H: log byte count and hash, commit nothing
-    else result is well formed
+    else result state is complete
       H->>CP: commit result bytes unchanged
       H->>CP: complete the claim
+    else result state is anything else
+      H->>CP: fail the claim retryable plus release, before any commit call
     else run or commit failed
       H->>CP: fail the claim (retryable, or terminal if the grant was denied or the carrier was terminally refused)
     end
@@ -65,9 +67,12 @@ Text version: ask for the next claim; wait and retry if none
 is ready. On a granted claim, start the collector, write one
 JSON request to stdin, heartbeat every third of the lease
 while it runs, and read one JSON result from stdout. Dry run
-logs byte count and hash and commits nothing. A well-formed
-result is committed unchanged and the claim completed. A
+logs byte count and hash and commits nothing. A complete-state
+result is committed unchanged and the claim completed; any
+other result state fails the claim as retryable (plus release)
+before any commit call. A
 failed run or commit fails the claim as retryable, or
 terminal if the producer grant was denied or the plane
-terminally refused the result carrier (4xx code invalid;
+terminally refused the result carrier (4xx code invalid,
+e.g. a complete-state carrier refused on identity grounds;
 a 5xx stays retryable).
