@@ -172,8 +172,12 @@ func TestCommitClaimFactsFailureMapping(t *testing.T) {
 	srv2 := httptest.NewServer(broken.handler())
 	defer srv2.Close()
 	c2 := newTestClient(t, srv2.URL)
-	if err := c2.CommitClaimFacts(context.Background(), commitLease(), []byte(`{}`)); err == nil {
+	err = c2.CommitClaimFacts(context.Background(), commitLease(), []byte(`{}`))
+	if err == nil {
 		t.Fatal("commit 500 = nil, want an error")
+	}
+	if errors.Is(err, cutovercontract.ErrTerminalCarrier) {
+		t.Errorf("commit 500+invalid = %v, want no terminal-carrier sentinel on a server failure", err)
 	}
 
 	srv3 := httptest.NewServer((&commitStub{}).handler())
@@ -351,5 +355,24 @@ func TestCommitClaimFactsTerminalCarrierRefusal(t *testing.T) {
 	}
 	if errors.Is(err, cutovercontract.ErrTerminalCarrier) {
 		t.Errorf("commit 500 = %v, want no terminal-carrier sentinel on a server failure", err)
+	}
+
+	// A 5xx carrying code invalid stays retryable too: only a 4xx
+	// refusal judges the carrier, so a server failure must never
+	// fail the claim terminal even when its code reads invalid.
+	invalid500 := &commitStub{resp: stubResponse{status: 500, body: `{"code":"invalid","message":"boom"}`}}
+	srv3 := httptest.NewServer(invalid500.handler())
+	defer srv3.Close()
+	c3 := newTestClient(t, srv3.URL)
+	err = c3.CommitClaimFacts(context.Background(), commitLease(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("commit 500+invalid = nil, want an error")
+	}
+	if errors.Is(err, cutovercontract.ErrTerminalCarrier) {
+		t.Errorf("commit 500+invalid = %v, want no terminal-carrier sentinel on a server failure", err)
+	}
+	call = nil
+	if !errors.As(err, &call) || call.Op != "CommitClaimFacts" || call.Code != CodeInvalid {
+		t.Errorf("commit 500+invalid = %v, want op/CommitClaimFacts code/invalid without the sentinel", err)
 	}
 }

@@ -56,7 +56,7 @@ sequenceDiagram
       H->>CP: commit result bytes unchanged
       H->>CP: complete the claim
     else run or commit failed
-      H->>CP: fail the claim (retryable, or terminal if the grant was denied)
+      H->>CP: fail the claim (retryable, or terminal if the grant was denied or the carrier was terminally refused)
     end
   end
 ```
@@ -68,4 +68,6 @@ while it runs, and read one JSON result from stdout. Dry run
 logs byte count and hash and commits nothing. A well-formed
 result is committed unchanged and the claim completed. A
 failed run or commit fails the claim as retryable, or
-terminal if the producer grant was denied.
+terminal if the producer grant was denied or the plane
+terminally refused the result carrier (4xx code invalid;
+a 5xx stays retryable).

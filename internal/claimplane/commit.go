@@ -105,14 +105,17 @@ func (c *Client) CommitClaimFacts(ctx context.Context, lease cutovercontract.Lea
 	}
 	if status < 200 || status > 299 {
 		err := c.callError(op, status, envelope)
-		if strings.TrimSpace(envelope.Code) == CodeInvalid {
-			// The plane judged the carrier, not the wire: a code
-			// invalid refusal (e.g. the core identity gate rejecting
-			// a non-complete result state) is deterministic for the
-			// carrier at hand, so the worker must fail terminal
-			// instead of retrying forever. Both errors stay
-			// reachable: the CallError keeps the op/code taxonomy
-			// and the sentinel marks the terminal class.
+		if status < 500 && strings.TrimSpace(envelope.Code) == CodeInvalid {
+			// The plane judged the carrier, not the wire: a 4xx
+			// code invalid refusal (e.g. the core identity gate
+			// rejecting a non-complete result state) is
+			// deterministic for the carrier at hand, so the
+			// worker must fail terminal instead of retrying
+			// forever. A 5xx carrying code invalid stays
+			// retryable — the wire failed, not the carrier.
+			// Both errors stay reachable: the CallError keeps
+			// the op/code taxonomy and the sentinel marks the
+			// terminal class.
 			return fmt.Errorf("claimplane %s: %w: %w", op, err, cutovercontract.ErrTerminalCarrier)
 		}
 		return err
