@@ -99,8 +99,11 @@ type childContract struct {
 // cannot spin the loop or stop the worker. A held claim re-polls
 // immediately after its outcome lands.
 //
-// Outcomes partition on the run: success commits the verbatim result and
-// then completes the state-only claim; a run error fails the claim
+// Outcomes partition on the run result: a complete-state success commits
+// the verbatim result and then completes the state-only claim; a
+// successful run with any other state fails the claim retryable and
+// releases the hold before any commit call, so the single-call lane
+// takes only complete results (issue #25); a run error fails the claim
 // retryable and releases the hold; a commit failure fails per the same
 // classifier without ever completing, so only the commit ack moves the
 // epoch. A grant denial — any error wrapping
@@ -204,10 +207,62 @@ func newClaimID() string {
 	return hex.EncodeToString(raw[:])
 }
 
+// completeResultState is the only satellite result state the
+// single-call commit lane accepts. It mirrors the collector SDK
+// ResultComplete (eshu-sdk/collector/types.go: the Result.state the
+// in-tree host commits): every other state — retryable, terminal,
+// unchanged, partial, missing, or unreadable — routes to the retryable
+// claim outcome before any commit call, so the core gate never sees a
+// carrier it must refuse terminally (issue #25). This gate is never
+// widened: a non-complete result is misrouted, not wrongly gated.
+const completeResultState = "complete"
+
+// maxLoggedResultState bounds the observed state text in the
+// retryable-routing failure: the value rides satellite JSON, so the
+// log line carries a rune-safe prefix, never unbounded child bytes.
+const maxLoggedResultState = 64
+
+// resultState extracts the top-level state of one collector result.
+// Anything but well-formed JSON carrying a string state reads as "",
+// which is non-complete and therefore retryable, never committed.
+func resultState(resultJSON []byte) string {
+	var envelope struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(resultJSON, &envelope); err != nil {
+		return ""
+	}
+	return envelope.State
+}
+
+// nonCompleteCause reports a non-complete satellite result as an
+// ordinary retryable failure: it wraps neither the grant-denied nor
+// the terminal-carrier sentinel, so failClaim releases the hold for
+// re-claim instead of ending the claim terminally. The observed state
+// rides the log line bounded; an empty state names its absence.
+func nonCompleteCause(state string) error {
+	if state == "" {
+		return errors.New("worker: satellite result has no complete state: failing retryable without commit")
+	}
+	trimmed := state
+	if len(trimmed) > maxLoggedResultState {
+		cut := maxLoggedResultState
+		for cut > 0 && trimmed[cut]&0xC0 == 0x80 {
+			cut--
+		}
+		trimmed = trimmed[:cut] + "…"
+	}
+	return fmt.Errorf("worker: satellite result state %q is not complete: failing retryable without commit", trimmed)
+}
+
 // serveOne executes one held claim: renew the lease with a heartbeat
-// while the collector runs, commit the verbatim result, then complete the
-// state-only epoch — commit first, complete second, one fencing token for
-// both. Only the {"ok":true} commit ack proceeds to Complete; every
+// while the collector runs, route the result, then for a complete
+// result commit the verbatim bytes and complete the state-only epoch —
+// commit first, complete second, one fencing token for both. A
+// non-complete satellite result fails retryable before any commit call
+// (requeue/backoff through the claim plane): the retry either succeeds
+// later and emits complete, or exhausts to terminal through the normal
+// path. Only the {"ok":true} commit ack proceeds to Complete; every
 // commit failure fails per the existing retry classifier without ever
 // completing, so a 409-class refusal, a transport loss, or a 5xx never
 // moves the epoch — while a terminally refused carrier fails terminal
@@ -223,6 +278,10 @@ func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, pl
 	}
 	if runErr != nil {
 		failClaim(ctx, plane, lease, runErr, cfg.Logger)
+		return
+	}
+	if state := resultState(result); state != completeResultState {
+		failClaim(ctx, plane, lease, nonCompleteCause(state), cfg.Logger)
 		return
 	}
 	if err := plane.CommitClaimFacts(ctx, lease, result); err != nil {
@@ -243,10 +302,12 @@ func serveOne(ctx context.Context, cfg Config, runner cutovercontract.Runner, pl
 // failClaim reports a failed claim: a grant denial or a terminally
 // refused carrier fails terminal, any other failure fails retryable and
 // releases the hold for re-claim. A refused carrier (e.g. the plane
-// rejecting a terminal-state result that is not complete) can never
+// refusing a complete-state carrier on identity grounds) can never
 // succeed on retry, so it ends in the bounded terminal state instead of
 // spinning the claim loop; transport losses and server failures keep
-// the retryable path.
+// the retryable path. Non-complete satellite results never reach this
+// classifier through the commit lane: serveOne fails them retryable
+// before any commit call (issue #25).
 // The cause is logged with the claim id when the host wired a logger:
 // the plane outcome rows carry no cause text, so without this line the
 // next door refusal is as blind as the attempt/deadline/handle refusals

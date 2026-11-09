@@ -317,11 +317,12 @@ func TestSignalCancelStopsEnabledLoop(t *testing.T) {
 	}
 }
 
-// stubRunner completes every held claim immediately with an empty result.
+// stubRunner completes every held claim immediately with a complete-state
+// result: only state "complete" reaches the single-call commit lane.
 type stubRunner struct{}
 
 func (stubRunner) RunCollector(context.Context, []byte) ([]byte, error) {
-	return []byte(`{}`), nil
+	return []byte(`{"protocol_version":"collector-sdk/v1alpha1","state":"complete","facts":[]}`), nil
 }
 
 func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
@@ -437,7 +438,7 @@ func TestEnabledFlowClaimsWithDistinctInstanceID(t *testing.T) {
 	if string(envelope["fencing_token"]) != `7` {
 		t.Errorf("commit fencing_token = %s, want the grant epoch token 7", envelope["fencing_token"])
 	}
-	if string(envelope["result_json"]) != `{}` {
-		t.Errorf("commit result_json = %s, want the exact stub-runner bytes {}", envelope["result_json"])
+	if string(envelope["result_json"]) != `{"protocol_version":"collector-sdk/v1alpha1","state":"complete","facts":[]}` {
+		t.Errorf("commit result_json = %s, want the exact complete-state stub-runner bytes", envelope["result_json"])
 	}
 }

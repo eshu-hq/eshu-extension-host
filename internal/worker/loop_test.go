@@ -276,7 +276,7 @@ func TestLoopClaimRequestFromConfig(t *testing.T) {
 }
 
 func TestLoopCompletesClaim(t *testing.T) {
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{"facts":[]}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{answers: []claimAnswer{{lease: testLease(), found: true}}}
 	if err := runLoop(t, testConfig(), runner, plane, 2*time.Second); err != nil {
 		t.Fatalf("Loop: %v", err)
@@ -343,7 +343,7 @@ func TestLoopTerminalOnRunGrantDeny(t *testing.T) {
 }
 
 func TestLoopTerminalOnCompleteGrantDeny(t *testing.T) {
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers:     []claimAnswer{{lease: testLease(), found: true}},
 		completeErr: fmt.Errorf("grant check: %w", cutovercontract.ErrGrantDenied),
@@ -358,7 +358,7 @@ func TestLoopTerminalOnCompleteGrantDeny(t *testing.T) {
 }
 
 func TestLoopRetryableAndReleaseOnCompleteError(t *testing.T) {
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{
 		answers:     []claimAnswer{{lease: testLease(), found: true}},
 		completeErr: errors.New("plane transport blew up"),
@@ -373,7 +373,7 @@ func TestLoopRetryableAndReleaseOnCompleteError(t *testing.T) {
 }
 
 func TestLoopSurvivesClaimErrors(t *testing.T) {
-	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return []byte(`{}`), nil }}
+	runner := &fakeRunner{run: func(context.Context, []byte) ([]byte, error) { return completeResult(), nil }}
 	plane := &fakePlane{answers: []claimAnswer{
 		{err: errors.New("plane flap one")},
 		{err: fmt.Errorf("admission: %w", cutovercontract.ErrGrantDenied)},
@@ -400,7 +400,7 @@ func TestLoopHeartbeatsDuringLongRun(t *testing.T) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-release:
-			return []byte(`{}`), nil
+			return completeResult(), nil
 		}
 	}}
 	plane := &fakePlane{answers: []claimAnswer{{lease: testLease(), found: true}}}
