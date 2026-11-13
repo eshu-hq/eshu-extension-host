@@ -9,7 +9,7 @@
 #
 # Base digests (re-verify with a registry lookup when bumping the tag;
 # verified 2026-11-04 during the Leaf 2 scaffold):
-#   golang:1.26.10-bookworm -> sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb
+#   golang:1.26.11-bookworm -> sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0
 #   (multi-arch list; the builder stage below runs on the build platform)
 #   gcr.io/distroless/static:nonroot -> sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 #   (multi-arch OCI index; pinned 2026-11-04, replaces the 18f4cc26 pin
@@ -22,7 +22,7 @@
 # A hardcoded GOARCH=amd64 baked an amd64 binary into the arm64 image of
 # a multi-arch push (the mirror of the eshu-hq/eshu#8852 "exec format
 # error" class, caught by review before the first tag release).
-FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build
 # VERSION is the release tag (release.yml sets it; local builds report dev).
 # The stamp path is exercised by the `image` lane in ci.yml, which builds
 # with a known VERSION and asserts /healthz reports it.
