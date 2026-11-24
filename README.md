@@ -78,10 +78,14 @@ claims out. This host is a client of it.
 - The component collectors (for example
   [eshu-collector-aws-cloud](https://github.com/eshu-hq/eshu-collector-aws-cloud)):
   the programs this host can run, one per claim.
+- [eshu-deploy](https://github.com/eshu-hq/eshu-deploy): Helm charts and
+  Compose files for running the stack.
+- [Collector and Reducer Readiness](https://github.com/eshu-hq/eshu/blob/main/docs/public/reference/collector-reducer-readiness.md) and the 31-repo
+  [Repository Map](https://github.com/eshu-hq/eshu/blob/main/REPOSITORIES.md).
 
 ## Development
 
-Go `1.26.10` (pinned in `go.mod`, no external dependencies). Run
+Go `1.26.11` (pinned in `go.mod`, no external dependencies). Run
 `make ci` for lint, tests, and the race suite with its coverage
 floor.
 
